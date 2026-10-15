@@ -2,7 +2,8 @@
 .codex/
 .agents/
 .aws/
-docs/大作业一.docx
+.playwright-mcp/
+docs/
 .env
 *.env
 !.env.example
@@ -11,3 +12,4 @@ docs/大作业一.docx
 coverage.out
 *.test
 *.log
+.vscode/
