@@ -1,11 +1,15 @@
-.PHONY: run test integration vet build
+.PHONY: run test frontend-test integration vet build
 run:
 	go run ./cmd/server
 test:
 	go test ./...
+	node --test tests/frontend.test.cjs
+frontend-test:
+	node --test tests/frontend.test.cjs
 integration:
 	@test -n "$$INTEGRATION_MONGO_URI" || (echo '请设置 INTEGRATION_MONGO_URI'; exit 1)
 	go test -count=1 -race ./...
+	node --test tests/frontend.test.cjs
 vet:
 	go vet ./...
 build:

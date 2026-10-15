@@ -28,3 +28,18 @@ python scripts/with-local-mongo.py go test -count=1 -race -v ./...
 | T15 | 全浏览器流程与移动视口 | 注册、四题编辑、保存、发布、单选跳转、数字范围/整数/必答校验、回退改路径、匿名提交、统计、重复提交处理、登出与登录跳转均可完成 | 已通过；390px 移动视口填写/统计无横向溢出；无 JavaScript 异常。预期的 API `401/400/409` 控制台记录已确认 | 通过 |
 
 本轮验证不构成生产容量、安全审计或高可用性结论。发布到生产环境前仍应根据部署环境补充负载、安全和备份恢复测试。
+
+## 2026-10-15 排查后的修复回归
+
+新增永久回归覆盖：无解必答配置及可满足边界、合法特殊ID、600份万字文本统计、稳定分页/空页/缺失与零值答案、全量计数与平均值、HTTP分页参数、保存/发布失败恢复、翻页与路由/筛选竞态。前端21项测试驱动实际 `app.js`，通过 Node 内置测试模块执行，无 npm 依赖。
+
+```sh
+python3 scripts/with-local-mongo.py make integration
+go vet ./...
+go build ./...
+node --check internal/web/static/app.js
+```
+
+完整Go竞态与真实MongoDB回归通过，前端21项通过；单独执行 `node tests/frontend.test.cjs` 可查看逐项结果。全项目跨包语句覆盖率82.1%。`make test` 包含Go与前端测试，但未提供 `INTEGRATION_MONGO_URI` 时数据库测试会跳过；完整验证应使用上述集成命令。运行前端测试需Node.js。实际编译输出使用 `/tmp/lab1-fixed-server`。
+
+真实浏览器已验证特殊ID提交、22份回答的统计翻页和保存期间编辑锁；测试库已清理。详细红绿证据、修复范围和兼容性变化见 [排查报告](audit-2026-10-15.md)。

@@ -41,6 +41,7 @@
 | `POST /api/surveys/{id}/close` | 关闭已发布问卷 | `200`，已关闭 Survey |
 | `GET /api/surveys/{id}/stats` | 全问卷统计 | `200`，Stats |
 | `GET /api/surveys/{id}/stats?questionId=q1` | 单题统计 | `200`，只含 `q1` 的 Stats；未知题目为 `404` |
+| `GET /api/surveys/{id}/stats?questionId=q1&offset=20&limit=20` | 原始答案下一页 | `200`，完整汇总和指定页原始答案 |
 
 `PUT` 请求保存草稿的完整可编辑内容，特别是 `revision`；遗漏的可编辑字段会使用其零值。服务器保留原有 `id`、`ownerId`、`createdAt`，且拒绝修改已发布问卷。草稿示例：
 
@@ -74,9 +75,14 @@
   "questions": [{
     "id":"q1", "title":"是否满意？", "type":"single", "answered":2,
     "options":[{"id":"yes","label":"满意","count":1},{"id":"no","label":"不满意","count":1}],
-    "values":["yes","no"], "average":null
+    "values":["yes","no"], "average":null,
+    "valuesOffset":0, "valuesLimit":20, "hasMore":false
   }]
 }
 ```
 
 `answered` 是实际经过该题并保存了答案的回答数；被跳过题目和未作答的可选题不计入。数字题 `average` 为数值或 `null`，文本/选择题为 `null`。响应中不含身份或去重字段。
+
+`values` 为分页原始答案，默认 `offset=0&limit=20`，按 `submittedAt`、`_id` 升序排列。`offset` 必须为非负整数，`limit` 为 1–50 的整数；无效、空值或重复分页参数返回 `400`。`valuesOffset`、`valuesLimit` 表示当前页，`hasMore` 表示仍有下一页；超出末页返回空数组。`totalResponses`、`answered`、选项计数与 `average` 始终是完整汇总，不受分页影响。全问卷查询对每题应用相同分页参数，通常应通过 `questionId` 单独翻页。
+
+汇总来自同一聚合输入流，原始答案另行分页查询；并发提交可能在两次读取之间出现，因此整个响应不保证事务级快照。现有客户端若需要全部原始答案，须根据 `hasMore` 继续翻页；不能再假定一次 `values` 包含全部数据。

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ type Repository interface {
 	UpdateDraft(context.Context, *domain.Survey, int) error
 	Transition(context.Context, string, string, string, string, int) error
 	InsertResponse(context.Context, *domain.Response, string) error
-	Stats(context.Context, *domain.Survey) (map[string]any, error)
+	Stats(context.Context, *domain.Survey, int, int) (map[string]any, error)
 }
 
 //go:embed static/*
@@ -521,6 +522,24 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	if survey == nil {
 		return
 	}
+	offset, limit := 0, 20
+	for _, param := range []struct {
+		name   string
+		target *int
+	}{{"offset", &offset}, {"limit", &limit}} {
+		if values, present := r.URL.Query()[param.name]; present {
+			if len(values) != 1 {
+				fail(w, 400, "分页参数只能提供一次")
+				return
+			}
+			value, err := strconv.Atoi(values[0])
+			if err != nil || value < 0 || (param.name == "limit" && (value < 1 || value > 50)) {
+				fail(w, 400, "offset 必须为非负整数；limit 必须为 1 至 50 的整数")
+				return
+			}
+			*param.target = value
+		}
+	}
 	questionID := r.URL.Query().Get("questionId")
 	if questionID != "" {
 		found := false
@@ -536,7 +555,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.repo.Stats(r.Context(), survey)
+	result, err := s.repo.Stats(r.Context(), survey, offset, limit)
 	if err != nil {
 		s.dbError(w, err)
 		return

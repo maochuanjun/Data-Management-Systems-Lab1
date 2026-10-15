@@ -42,6 +42,7 @@ export MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true'
 ```sh
 go test -count=1 -race ./...
 go vet ./...
+node --test tests/frontend.test.cjs # 前端回归需 Node.js；不安装 npm 依赖
 
 # MongoDB 集成测试（仅在明确提供测试实例时）
 export INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true'
@@ -58,6 +59,8 @@ go test -count=1 -race ./...
 - 规则驱动且只向前的条件跳转
 - 登录后填写、可选匿名提交、数据库唯一约束防重复
 - MongoDB 聚合统计：选择计数、文本内容、数字平均值
+
+统计中的原始答案默认每题返回 20 条，文本和数字题可在页面翻页；计数与平均值始终覆盖全部回答。API 分页参数与兼容性说明见 [HTTP API](documentation/api.md)。`make test` 运行 Go 与前端回归测试；`make frontend-test` 单独运行前端测试。
 
 ## 文档索引
 

@@ -233,3 +233,55 @@ func TestValidateSubmission(t *testing.T) {
 		t.Fatal("empty survey accepted")
 	}
 }
+
+func TestRequiredConstraintsHaveAnAnswer(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		q      Question
+		valid  bool
+		answer any
+	}{
+		{"required multiple zero maximum", Question{Type: "multiple", Required: true, Validation: Validation{MaxSelect: intPtr(0)}}, false, nil},
+		{"optional multiple zero maximum", Question{Type: "multiple", Validation: Validation{MaxSelect: intPtr(0)}}, true, nil},
+		{"required multiple one maximum", Question{Type: "multiple", Required: true, Validation: Validation{MaxSelect: intPtr(1)}}, true, []string{"a"}},
+		{"required text zero maximum", Question{Type: "text", Required: true, Validation: Validation{MaxLength: intPtr(0)}}, false, nil},
+		{"optional text zero maximum", Question{Type: "text", Validation: Validation{MaxLength: intPtr(0)}}, true, nil},
+		{"required text one maximum", Question{Type: "text", Required: true, Validation: Validation{MaxLength: intPtr(1)}}, true, "中"},
+		{"integer gap", Question{Type: "number", Required: true, Validation: Validation{Integer: true, Min: floatPtr(.1), Max: floatPtr(.9)}}, false, nil},
+		{"negative integer gap", Question{Type: "number", Required: true, Validation: Validation{Integer: true, Min: floatPtr(-.9), Max: floatPtr(-.1)}}, false, nil},
+		{"optional integer gap", Question{Type: "number", Validation: Validation{Integer: true, Min: floatPtr(.1), Max: floatPtr(.9)}}, true, nil},
+		{"integer endpoint", Question{Type: "number", Required: true, Validation: Validation{Integer: true, Min: floatPtr(.1), Max: floatPtr(1)}}, true, 1.0},
+		{"decimal interval", Question{Type: "number", Required: true, Validation: Validation{Min: floatPtr(.1), Max: floatPtr(.9)}}, true, .5},
+		{"unsafe lower bound", Question{Type: "number", Required: true, Validation: Validation{Min: floatPtr(maxSafeInteger + 1)}}, false, nil},
+		{"unsafe upper bound", Question{Type: "number", Required: true, Validation: Validation{Max: floatPtr(-maxSafeInteger - 1)}}, false, nil},
+		{"positive safe endpoint", Question{Type: "number", Required: true, Validation: Validation{Integer: true, Min: floatPtr(maxSafeInteger)}}, true, float64(maxSafeInteger)},
+		{"negative safe endpoint", Question{Type: "number", Required: true, Validation: Validation{Max: floatPtr(-maxSafeInteger)}}, true, -float64(maxSafeInteger)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			q := tt.q
+			q.ID, q.Title = "q", tt.name
+			if q.Type == "multiple" {
+				q.Options = choiceQuestion("multiple").Options
+			}
+			if err := ValidateSurvey(&Survey{Title: "constraints", Questions: []Question{q}}); (err == nil) != tt.valid {
+				t.Fatalf("ValidateSurvey = %v, valid = %v", err, tt.valid)
+			}
+			if tt.valid {
+				if _, err := ValidateAnswer(q, tt.answer); err != nil {
+					t.Fatalf("witness answer rejected: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSubmissionWithJavaScriptPropertyIDs(t *testing.T) {
+	s := &Survey{Title: "special keys", Questions: []Question{
+		{ID: "__proto__", Title: "text", Type: "text", Required: true},
+		{ID: "constructor", Title: "number", Type: "number", Required: true},
+	}}
+	answers, path, err := ValidateSubmission(s, map[string]any{"__proto__": "answer", "constructor": 42.0})
+	if err != nil || answers["__proto__"] != "answer" || answers["constructor"] != 42.0 || len(path) != 2 {
+		t.Fatalf("special keys submission = %#v, %v, %v", answers, path, err)
+	}
+}

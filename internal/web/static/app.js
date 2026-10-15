@@ -99,7 +99,19 @@ async function dashboard() {
 function identifier(prefix) {return prefix+'_'+Math.random().toString(36).slice(2,10);}
 async function editorView(id) {
   let survey=await api('/api/surveys/'+id);
-  const root=el('div');
+  let busy=false;
+  const root=el('fieldset',{style:'border:0;padding:0;margin:0;min-width:0'});
+  async function save(publish=false){
+    if(busy)return;
+    busy=true;root.disabled=true;root.setAttribute('aria-busy','true');
+    try{
+      survey=await api('/api/surveys/'+id,'PUT',survey);
+      if(publish)survey=await api('/api/surveys/'+id+'/publish','POST');
+      show(publish?'发布成功，可以分享填写链接了':'草稿已保存',true);
+    }finally{
+      busy=false;root.disabled=false;root.setAttribute('aria-busy','false');paint();
+    }
+  }
   function paint() {
     const locked=survey.status!=='draft';
     root.replaceChildren(hero(locked?'问卷详情':'设计问卷',locked?'已发布问卷的题目与配置已锁定。':'先完善题目与规则，再保存并发布。',link('← 我的问卷','/')));
@@ -120,8 +132,7 @@ async function editorView(id) {
       root.append(el('section',{class:'card row'},addType,button('＋ 添加题目',()=>{
         const type=addType.value;survey.questions.push({id:identifier('q'),title:'',type,required:true,options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[],validation:{integer:false},rules:[]});paint();
       })));
-      async function save(){survey=await api('/api/surveys/'+id,'PUT',survey);paint();}
-      root.append(el('div',{class:'toolbar row between'},el('span',{class:'help'},`${survey.questions.length} 道题 · 修改后请保存`),el('div',{class:'actions'},button('保存草稿',async()=>{await save();show('草稿已保存',true);}),button('保存并发布',async()=>{await save();await api('/api/surveys/'+id+'/publish','POST');survey=await api('/api/surveys/'+id);paint();show('发布成功，可以分享填写链接了',true);},'primary'))));
+      root.append(el('div',{class:'toolbar row between'},el('span',{class:'help'},`${survey.questions.length} 道题 · 修改后请保存`),el('div',{class:'actions'},button('保存草稿',()=>save()),button('保存并发布',()=>save(true),'primary'))));
     }
   }
   function questionEditor(question,index,locked){
@@ -156,7 +167,7 @@ async function fillView(id){
   const survey=await api('/api/public/surveys/'+id);
   const root=el('div',{class:'fill'});
   if(survey.status!=='published'||(survey.deadline&&new Date(survey.deadline)<=new Date()))return el('section',{class:'card fill'},el('h1',{},survey.title),el('p',{},'问卷尚未开放或已结束，暂时无法填写。'));
-  const answers={},path=[];let current=survey.questions[0]?.id || 'END',anonymous=false,submitting=false,navigating=false;
+  const answers=Object.create(null),path=[];let current=survey.questions[0]?.id || 'END',anonymous=false,submitting=false,navigating=false;
   function paint(){
     root.replaceChildren(el('div',{class:'eyebrow'},'YOUR VOICE MATTERS'),el('h1',{class:'preview'},survey.title),el('p',{class:'muted preview'},survey.description));
     if(survey.deadline)root.append(el('p',{class:'help'},'截止：'+new Date(survey.deadline).toLocaleString()));
@@ -199,15 +210,39 @@ async function fillView(id){
   paint();return root;
 }
 async function statsView(id){
+  const generation=routeGeneration,pending=new Set();
   const [survey,stats]=await Promise.all([api('/api/surveys/'+id),api('/api/surveys/'+id+'/stats')]);
   const root=el('div',{},hero('回答统计',survey.title,link('← 问卷详情','/edit/'+id)),el('section',{class:'card'},el('p',{class:'muted'},'有效提交总数'),el('div',{class:'large-number'},stats.totalResponses)));
-  const list=el('div');
-  function paint(filter){
-    list.replaceChildren();
-    for(const question of stats.questions.filter(q=>!filter||q.id===filter)){
-      const card=el('section',{class:'card'},el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 人回答 · 被跳过或未填写的题目不计入本题人数`));
+  const list=el('div'),cards=new Map();
+  function paintQuestion(question,card){
+      card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 人回答 · 被跳过或未填写的题目不计入本题人数`));
       if(['single','multiple'].includes(question.type))for(const option of question.options||[]){const percent=question.answered?Math.round(option.count/question.answered*100):0;card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{class:'muted'},`${option.count} 人 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));}
-      else{if(question.type==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));card.append(el('ol',{class:'response-values'},(question.values||[]).map(value=>el('li',{},String(value)))));if(!question.values?.length)card.append(el('p',{class:'muted'},'暂无回答'));}
+      else{
+        const offset=question.valuesOffset||0,limit=question.valuesLimit||20;
+        if(question.type==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));
+        card.append(el('ol',{class:'response-values',start:offset+1},(question.values||[]).map(value=>el('li',{},String(value)))));
+        if(!question.values?.length)card.append(el('p',{class:'muted'},'暂无回答'));
+        const previous=button('上一页',()=>loadPage(Math.max(0,offset-limit))),next=button('下一页',()=>loadPage(offset+limit));
+        previous.disabled=pending.has(question.id)||offset===0;next.disabled=pending.has(question.id)||!question.hasMore;
+        card.append(el('div',{class:'actions'},previous,el('span',{class:'help'},`第 ${Math.floor(offset/limit)+1} 页`),next));
+        async function loadPage(nextOffset){
+          if(pending.has(question.id))return;
+          pending.add(question.id);previous.disabled=true;next.disabled=true;
+          try{
+            const params=new URLSearchParams({questionId:question.id,offset:nextOffset,limit:20});
+            const page=await api('/api/surveys/'+id+'/stats?'+params);
+            if(generation!==routeGeneration)return;
+            const result=page.questions.find(item=>item.id===question.id);
+            question.values=result.values;question.valuesOffset=result.valuesOffset;question.valuesLimit=result.valuesLimit;question.hasMore=result.hasMore;
+          }catch(error){if(generation===routeGeneration)throw error;}
+          finally{pending.delete(question.id);if(generation===routeGeneration&&cards.has(question.id))paintQuestion(question,cards.get(question.id));}
+        }
+      }
+  }
+  function paint(filter){
+    list.replaceChildren();cards.clear();
+    for(const question of stats.questions.filter(q=>!filter||q.id===filter)){
+      const card=el('section',{class:'card'});cards.set(question.id,card);paintQuestion(question,card);
       list.append(card);
     }
   }

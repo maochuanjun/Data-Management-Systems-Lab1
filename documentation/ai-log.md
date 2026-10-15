@@ -18,6 +18,8 @@
 
 ## 生成或协助生成的代码范围
 
+2026-10-15 追加：用户要求“全面排查、测试”，随后要求“尝试修复，并补充回归测试”。先复现并记录4类缺陷，再修改领域、存储、HTTP与前端实现，补充Go/MongoDB及21项无依赖前端回归，并更新API分页契约。真实MongoDB `make integration`、`go vet`、编译、JS语法与浏览器验证均通过；测试仅使用并清理独立随机测试数据库。审查还发现并修正了翻页期间切换筛选的竞态。代码和文档未提交Git，也未批量修改既有问卷数据。详情见 `audit-2026-10-15.md`。
+
 - `internal/domain/models.go`：用户、问卷、题目、选项、规则和回答模型。
 - `internal/domain/logic.go` 与 `logic_test.go`：问卷/答案校验、顺序规则匹配、服务端作答路径推导与领域测试。
 - `internal/store/mongo.go`：MongoDB 连接、JSON Schema validator、索引、会话、问卷、回答与聚合统计。

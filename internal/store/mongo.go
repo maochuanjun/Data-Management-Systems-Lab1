@@ -68,7 +68,7 @@ func (s *Store) Init(ctx context.Context) error {
 		"sessions": {{Keys: bson.D{{Key: "expiresAt", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)}},
 		"responses": {
 			{Keys: bson.D{{Key: "surveyId", Value: 1}, {Key: "dedupeKey", Value: 1}}, Options: options.Index().SetUnique(true).SetPartialFilterExpression(bson.M{"dedupeKey": bson.M{"$exists": true}})},
-			{Keys: bson.D{{Key: "surveyId", Value: 1}, {Key: "submittedAt", Value: 1}}},
+			{Keys: bson.D{{Key: "surveyId", Value: 1}, {Key: "submittedAt", Value: 1}, {Key: "_id", Value: 1}}},
 		},
 	}
 	for name, models := range indexes {
@@ -222,20 +222,35 @@ func (s *Store) InsertResponse(ctx context.Context, response *domain.Response, d
 	return translate(err)
 }
 
-// Stats feeds the same matching response stream into every facet, keeping the
-// total and per-question counts consistent even while new answers arrive.
-// Only answer fields are aggregated; participant identities are never returned.
-func (s *Store) Stats(ctx context.Context, survey *domain.Survey) (map[string]any, error) {
+// Stats aggregates bounded summaries from one matching response stream. Raw
+// answers are fetched separately in stable, bounded pages; concurrent submissions
+// may appear between the summary and page reads. Participant identities are never
+// returned.
+func (s *Store) Stats(ctx context.Context, survey *domain.Survey, offset, limit int) (map[string]any, error) {
+	if offset < 0 || limit < 1 || limit > 50 {
+		return nil, errors.New("statistics offset must be nonnegative and limit between 1 and 50")
+	}
 	facets := bson.M{"total": mongo.Pipeline{{{Key: "$count", Value: "count"}}}}
 	for i, q := range survey.Questions {
 		field := "answers." + q.ID
-		group := bson.M{"_id": nil, "answered": bson.M{"$sum": 1}, "values": bson.M{"$push": "$" + field}}
+		group := bson.M{"_id": nil, "answered": bson.M{"$sum": 1}}
 		if q.Type == "number" {
 			group["average"] = bson.M{"$avg": "$" + field}
+		}
+		optionCounts := make(bson.A, 0, len(q.Options))
+		for j, option := range q.Options {
+			key := fmt.Sprintf("o%d", j)
+			condition := bson.M{"$eq": bson.A{"$" + field, bson.M{"$literal": option.ID}}}
+			if q.Type == "multiple" {
+				condition = bson.M{"$in": bson.A{bson.M{"$literal": option.ID}, "$" + field}}
+			}
+			group[key] = bson.M{"$sum": bson.M{"$cond": bson.A{condition, 1, 0}}}
+			optionCounts = append(optionCounts, "$"+key)
 		}
 		facets[fmt.Sprintf("q%d", i)] = mongo.Pipeline{
 			{{Key: "$match", Value: bson.M{field: bson.M{"$exists": true, "$ne": nil}}}},
 			{{Key: "$group", Value: group}},
+			{{Key: "$project", Value: bson.M{"answered": 1, "average": 1, "optionCounts": optionCounts}}},
 		}
 	}
 	pipeline := mongo.Pipeline{
@@ -248,10 +263,10 @@ func (s *Store) Stats(ctx context.Context, survey *domain.Survey) (map[string]an
 	}
 	defer cursor.Close(ctx)
 	type aggregateRow struct {
-		Count    int64    `bson:"count"`
-		Answered int64    `bson:"answered"`
-		Values   []any    `bson:"values"`
-		Average  *float64 `bson:"average"`
+		Count        int64    `bson:"count"`
+		Answered     int64    `bson:"answered"`
+		OptionCounts []int64  `bson:"optionCounts"`
+		Average      *float64 `bson:"average"`
 	}
 	var results []map[string][]aggregateRow
 	if err := cursor.All(ctx, &results); err != nil {
@@ -268,39 +283,59 @@ func (s *Store) Stats(ctx context.Context, survey *domain.Survey) (map[string]an
 	questions := make([]map[string]any, 0, len(survey.Questions))
 	for i, q := range survey.Questions {
 		rows := aggregates[fmt.Sprintf("q%d", i)]
-		values := make([]any, 0)
-		answered := int64(0)
+		var row aggregateRow
 		var average any
 		if len(rows) > 0 {
-			answered, values = rows[0].Answered, rows[0].Values
-			if rows[0].Average != nil {
-				average = *rows[0].Average
+			row = rows[0]
+			if row.Average != nil {
+				average = *row.Average
 			}
 		}
-		counts := make(map[string]int64)
-		for _, value := range values {
-			switch v := value.(type) {
-			case string:
-				counts[v]++
-			case bson.A:
-				for _, item := range v {
-					if id, ok := item.(string); ok {
-						counts[id]++
-					}
-				}
-			case []any:
-				for _, item := range v {
-					if id, ok := item.(string); ok {
-						counts[id]++
-					}
-				}
-			}
+		values, hasMore, err := s.answerValues(ctx, survey.ID, q.ID, offset, limit)
+		if err != nil {
+			return nil, err
 		}
 		optionStats := make([]map[string]any, 0, len(q.Options))
-		for _, option := range q.Options {
-			optionStats = append(optionStats, map[string]any{"id": option.ID, "label": option.Label, "count": counts[option.ID]})
+		for j, option := range q.Options {
+			count := int64(0)
+			if j < len(row.OptionCounts) {
+				count = row.OptionCounts[j]
+			}
+			optionStats = append(optionStats, map[string]any{"id": option.ID, "label": option.Label, "count": count})
 		}
-		questions = append(questions, map[string]any{"id": q.ID, "title": q.Title, "type": q.Type, "answered": answered, "options": optionStats, "values": values, "average": average})
+		questions = append(questions, map[string]any{
+			"id": q.ID, "title": q.Title, "type": q.Type, "answered": row.Answered,
+			"options": optionStats, "values": values, "average": average,
+			"valuesOffset": offset, "valuesLimit": limit, "hasMore": hasMore,
+		})
 	}
 	return map[string]any{"totalResponses": total, "questions": questions}, nil
+}
+
+func (s *Store) answerValues(ctx context.Context, surveyID, questionID string, offset, limit int) ([]any, bool, error) {
+	field := "answers." + questionID
+	cursor, err := s.db.Collection("responses").Find(ctx,
+		bson.M{"surveyId": surveyID, field: bson.M{"$exists": true, "$ne": nil}},
+		options.Find().
+			SetSort(bson.D{{Key: "submittedAt", Value: 1}, {Key: "_id", Value: 1}}).
+			SetProjection(bson.M{"_id": 0, field: 1}).
+			SetSkip(int64(offset)).SetLimit(int64(limit+1)))
+	if err != nil {
+		return nil, false, err
+	}
+	defer cursor.Close(ctx)
+	values := make([]any, 0, limit)
+	for cursor.Next(ctx) {
+		if len(values) == limit {
+			return values, true, nil
+		}
+		var response struct {
+			Answers map[string]any `bson:"answers"`
+		}
+		if err := cursor.Decode(&response); err != nil {
+			return nil, false, err
+		}
+		values = append(values, response.Answers[questionID])
+	}
+	return values, false, cursor.Err()
 }

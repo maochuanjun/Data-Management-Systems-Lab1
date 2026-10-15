@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -168,6 +169,26 @@ func TestMongoHTTPIntegration(t *testing.T) {
 		t.Fatalf("owner list: %#v", list)
 	}
 
+	// Reject impossible required constraints both on API writes and when
+	// publishing a draft previously stored by an older application version.
+	for _, q := range []domain.Question{
+		{ID: "q", Title: "必答文本", Type: "text", Required: true, Validation: domain.Validation{MaxLength: integrationInt(0)}},
+		{ID: "q", Title: "必答多选", Type: "multiple", Required: true, Options: []domain.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}, Validation: domain.Validation{MaxSelect: integrationInt(0)}},
+		{ID: "q", Title: "必答整数", Type: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(.1), Max: integrationFloat(.9)}},
+	} {
+		invalid := draft
+		invalid.Questions = []domain.Question{q}
+		owner.must(t, "POST", "/api/surveys", invalid, 400)
+		owner.must(t, "PUT", private, invalid, 400)
+		if _, err := db.Collection("surveys").UpdateOne(ctx, bson.M{"_id": draft.ID}, bson.M{"$set": bson.M{"questions": invalid.Questions}}); err != nil {
+			t.Fatal(err)
+		}
+		owner.must(t, "POST", private+"/publish", nil, 400)
+	}
+	if _, err := db.Collection("surveys").UpdateOne(ctx, bson.M{"_id": draft.ID}, bson.M{"$set": bson.M{"questions": draft.Questions}}); err != nil {
+		t.Fatal(err)
+	}
+
 	draft.Questions = []domain.Question{
 		{ID: "q1", Title: "单选", Type: "single", Required: true,
 			Options: []domain.Option{{ID: "a", Label: "跳过多选"}, {ID: "b", Label: "继续"}, {ID: "end", Label: "结束"}},
@@ -290,6 +311,40 @@ func TestMongoHTTPIntegration(t *testing.T) {
 		t.Fatalf("single question stats: %#v", stats)
 	}
 	owner.must(t, "GET", private+"/stats?questionId=unknown", nil, 404)
+	for _, query := range []string{
+		"offset=-1", "offset=bad", "offset=", "offset=99999999999999999999999999",
+		"offset=0&offset=1", "limit=0", "limit=51", "limit=-1", "limit=1.5", "limit=", "limit=1&limit=2",
+	} {
+		owner.must(t, "GET", private+"/stats?"+query, nil, 400)
+	}
+	pagedNumbers := make(map[float64]bool)
+	for offset := 0; offset < 2; offset++ {
+		var page struct {
+			Questions []struct {
+				Answered int       `json:"answered"`
+				Average  float64   `json:"average"`
+				Values   []float64 `json:"values"`
+				Offset   int       `json:"valuesOffset"`
+				Limit    int       `json:"valuesLimit"`
+				HasMore  bool      `json:"hasMore"`
+			} `json:"questions"`
+		}
+		query := private + "/stats?questionId=q3&limit=1&offset=" + fmt.Sprint(offset)
+		if err := json.Unmarshal(owner.must(t, "GET", query, nil, 200), &page); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Questions) != 1 {
+			t.Fatalf("page: %#v", page)
+		}
+		q := page.Questions[0]
+		if q.Answered != 2 || q.Average != 15 || len(q.Values) != 1 || q.Offset != offset || q.Limit != 1 || q.HasMore != (offset == 0) {
+			t.Fatalf("incorrect paginated question: %#v", q)
+		}
+		pagedNumbers[q.Values[0]] = true
+	}
+	if len(pagedNumbers) != 2 || !pagedNumbers[10] || !pagedNumbers[20] {
+		t.Fatalf("pages omitted or repeated answers: %v", pagedNumbers)
+	}
 
 	const attempts = 12
 	type outcome struct {

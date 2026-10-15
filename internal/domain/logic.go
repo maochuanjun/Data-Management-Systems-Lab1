@@ -98,6 +98,31 @@ func validateQuestion(q Question) error {
 		(v.Min != nil && v.Max != nil && *v.Min > *v.Max) {
 		return fmt.Errorf("数值上下限无效")
 	}
+	if q.Required {
+		if q.Type == "multiple" && v.MaxSelect != nil && *v.MaxSelect == 0 {
+			return fmt.Errorf("必答多选题必须允许至少选择一个选项")
+		}
+		if q.Type == "text" && v.MaxLength != nil && *v.MaxLength == 0 {
+			return fmt.Errorf("必答文本题必须允许至少一个字符")
+		}
+		if q.Type == "number" {
+			// Beyond this interval every representable float64 is an unsafe
+			// integer, which ValidateAnswer rejects even for decimal questions.
+			lower, upper := -float64(maxSafeInteger), float64(maxSafeInteger)
+			if v.Min != nil {
+				lower = math.Max(lower, *v.Min)
+			}
+			if v.Max != nil {
+				upper = math.Min(upper, *v.Max)
+			}
+			if v.Integer {
+				lower, upper = math.Ceil(lower), math.Floor(upper)
+			}
+			if lower > upper {
+				return fmt.Errorf("必答数字题的范围内没有可接受的数值")
+			}
+		}
+	}
 	return nil
 }
 
