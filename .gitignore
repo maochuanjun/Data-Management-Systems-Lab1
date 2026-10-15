@@ -1,0 +1,13 @@
+.omx/
+.codex/
+.agents/
+.aws/
+docs/大作业一.docx
+.env
+*.env
+!.env.example
+*:Zone.Identifier
+/bin/
+coverage.out
+*.test
+*.log
