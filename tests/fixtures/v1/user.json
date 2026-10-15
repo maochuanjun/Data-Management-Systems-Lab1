@@ -1,0 +1,8 @@
+{
+  "_id": "legacy-owner",
+  "username": "legacy_owner",
+  "passwordHash": "$2a$10$m3UirVb3t5I6oK6oksI1a.pDWYECXehjbOyb8P.7sVnhfN85z7jra",
+  "createdAt": {
+    "$date": "2025-01-02T03:04:05Z"
+  }
+}

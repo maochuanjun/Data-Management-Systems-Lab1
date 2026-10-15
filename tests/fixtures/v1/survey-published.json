@@ -1,0 +1,103 @@
+{
+  "schemaVersion": {
+    "$numberInt": "1"
+  },
+  "_id": "legacy-published",
+  "ownerId": "legacy-owner",
+  "title": "Version one survey",
+  "description": "Fixed compatibility fixture",
+  "allowAnonymous": true,
+  "allowRepeat": false,
+  "deadline": null,
+  "status": "published",
+  "questions": [
+    {
+      "id": "single",
+      "title": "Choose a path",
+      "type": "single",
+      "required": true,
+      "options": [
+        {
+          "id": "continue",
+          "label": "Continue"
+        },
+        {
+          "id": "finish",
+          "label": "Finish"
+        }
+      ],
+      "validation": {},
+      "rules": [
+        {
+          "operator": "eq",
+          "value": "finish",
+          "target": "END"
+        }
+      ]
+    },
+    {
+      "id": "multiple",
+      "title": "Choose exactly two",
+      "type": "multiple",
+      "required": true,
+      "options": [
+        {
+          "id": "a",
+          "label": "A"
+        },
+        {
+          "id": "b",
+          "label": "B"
+        },
+        {
+          "id": "c",
+          "label": "C"
+        }
+      ],
+      "validation": {
+        "minSelect": {
+          "$numberInt": "2"
+        },
+        "maxSelect": {
+          "$numberInt": "2"
+        }
+      },
+      "rules": []
+    },
+    {
+      "id": "text",
+      "title": "Comment",
+      "type": "text",
+      "required": true,
+      "options": null,
+      "validation": {
+        "minLength": {
+          "$numberInt": "2"
+        },
+        "maxLength": {
+          "$numberInt": "10"
+        }
+      },
+      "rules": []
+    },
+    {
+      "id": "number",
+      "title": "Rating",
+      "type": "number",
+      "required": true,
+      "options": null,
+      "validation": {
+        "min": 0.0,
+        "max": 100.0,
+        "integer": true
+      },
+      "rules": []
+    }
+  ],
+  "createdAt": {
+    "$date": "2025-01-02T03:04:05Z"
+  },
+  "revision": {
+    "$numberInt": "2"
+  }
+}

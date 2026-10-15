@@ -1,10 +1,7 @@
-package web_test
+package integration_test
 
 import (
 	"bytes"
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +9,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -20,12 +16,11 @@ import (
 	"time"
 
 	"questionnaire/internal/domain"
-	"questionnaire/internal/store"
 	"questionnaire/internal/web"
+	"questionnaire/tests/support"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type integrationHTTP struct {
@@ -86,43 +81,8 @@ func integrationAnswers(anonymous bool, answers map[string]any) map[string]any {
 // Set INTEGRATION_MONGO_URI to opt in. Every run creates and drops only its own
 // randomly named questionnaire_test_* database, never the URI's default DB.
 func TestMongoHTTPIntegration(t *testing.T) {
-	uri := os.Getenv("INTEGRATION_MONGO_URI")
-	if uri == "" {
-		t.Skip("set INTEGRATION_MONGO_URI to run real MongoDB integration tests")
-	}
-	var random [12]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		t.Fatal(err)
-	}
-	database := "questionnaire_test_" + hex.EncodeToString(random[:])
-	raw, err := mongo.Connect(options.Client().ApplyURI(uri))
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := raw.Database(database)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := db.Drop(ctx); err != nil {
-			t.Errorf("drop exact test DB %s: %v", database, err)
-		}
-		if err := raw.Disconnect(ctx); err != nil {
-			t.Errorf("disconnect inspection client: %v", err)
-		}
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	repo, err := store.New(ctx, uri, database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := repo.Close(closeCtx); err != nil {
-			t.Errorf("close repository: %v", err)
-		}
-	})
+	fixture := support.NewMongo(t)
+	repo, ctx, db := fixture.Store, fixture.Context, fixture.DB
 	server := httptest.NewServer(web.New(repo, false))
 	t.Cleanup(server.Close)
 	newClient := func() integrationHTTP {
@@ -426,38 +386,66 @@ func TestMongoHTTPIntegration(t *testing.T) {
 	}
 }
 
-func TestIntegrationHTTPGuardAndJSON(t *testing.T) {
-	handler := web.New(nil, false)
-	for _, tc := range []struct {
-		name, body, contentType, origin, fetch string
-		want                                   int
-	}{
-		{"malformed", "{", "application/json", "", "", 400},
-		{"unknown field", `{"username":"alice","password":"password123","extra":true}`, "application/json", "", "", 400},
-		{"trailing JSON", `{} {}`, "application/json", "", "", 400},
-		{"wrong media type", `{}`, "text/plain", "", "", 400},
-		{"cross origin", `{}`, "application/json", "https://attacker.invalid", "", 403},
-		{"cross site", `{}`, "application/json", "", "cross-site", 403},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "http://example.test/api/register", strings.NewReader(tc.body))
-			req.Header.Set("Content-Type", tc.contentType)
-			req.Header.Set("Origin", tc.origin)
-			req.Header.Set("Sec-Fetch-Site", tc.fetch)
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, req)
-			response := recorder.Result()
-			defer response.Body.Close()
-			body, err := io.ReadAll(response.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if response.StatusCode != tc.want {
-				t.Fatalf("status %d, want %d: %s", response.StatusCode, tc.want, body)
-			}
-			if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("X-Content-Type-Options") != "nosniff" {
-				t.Fatal("security/cache headers missing")
-			}
-		})
+func newIntegrationClient(t *testing.T, serverURL string) integrationHTTP {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return integrationHTTP{serverURL, &http.Client{Jar: jar, Timeout: 20 * time.Second}}
+}
+
+func TestDistinctAccountsSubmitConcurrently(t *testing.T) {
+	fixture := support.NewMongo(t)
+	server := httptest.NewServer(web.New(fixture.Store, false))
+	t.Cleanup(server.Close)
+	const accounts = 8
+	clients := make([]integrationHTTP, accounts)
+	for i := range clients {
+		clients[i] = newIntegrationClient(t, server.URL)
+		clients[i].must(t, "POST", "/api/register", map[string]string{"username": fmt.Sprintf("participant_%d", i), "password": "test-password-123"}, 201)
+	}
+	survey := integrationDecode[domain.Survey](t, clients[0].must(t, "POST", "/api/surveys", domain.Survey{
+		Title: "Exactly two choices", AllowAnonymous: true, Questions: []domain.Question{
+			{ID: "choices", Title: "Choose two", Type: "multiple", Required: true,
+				Options:    []domain.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}, {ID: "c", Label: "C"}},
+				Validation: domain.Validation{MinSelect: integrationInt(2), MaxSelect: integrationInt(2)}},
+		},
+	}, 201))
+	clients[0].must(t, "POST", "/api/surveys/"+survey.ID+"/publish", nil, 200)
+	public := "/api/public/surveys/" + survey.ID
+	for _, answer := range [][]string{{"a"}, {"a", "b", "c"}, {"a", "a"}} {
+		clients[0].must(t, "POST", public+"/responses", integrationAnswers(false, map[string]any{"choices": answer}), 400)
+	}
+	start := make(chan struct{})
+	type outcome struct {
+		code int
+		body []byte
+		err  error
+	}
+	outcomes := make(chan outcome, accounts)
+	for i, client := range clients {
+		go func(i int, client integrationHTTP) {
+			<-start
+			code, body, err := client.send("POST", public+"/responses", integrationAnswers(i%2 == 0, map[string]any{"choices": []string{"a", "b"}}))
+			outcomes <- outcome{code, body, err}
+		}(i, client)
+	}
+	close(start)
+	for range accounts {
+		result := <-outcomes
+		if result.err != nil || result.code != http.StatusCreated {
+			t.Errorf("distinct user's first submission: status=%d body=%s err=%v", result.code, result.body, result.err)
+		}
+	}
+	if count, err := fixture.DB.Collection("responses").CountDocuments(fixture.Context, bson.M{"surveyId": survey.ID}); err != nil || count != accounts {
+		t.Fatalf("distinct users saved %d responses, want %d: %v", count, accounts, err)
+	}
+	for _, client := range clients {
+		client.must(t, "POST", public+"/responses", integrationAnswers(false, map[string]any{"choices": []string{"b", "c"}}), 409)
+	}
+	stats := integrationDecode[map[string]any](t, clients[0].must(t, "GET", "/api/surveys/"+survey.ID+"/stats", nil, 200))
+	if stats["totalResponses"] != float64(accounts) {
+		t.Fatalf("totalResponses = %v", stats["totalResponses"])
 	}
 }

@@ -1,15 +1,21 @@
-.PHONY: run test frontend-test integration vet build
+.PHONY: run test unit-test frontend-test integration e2e verify vet build
 run:
 	go run ./cmd/server
 test:
-	go test ./...
-	node --test tests/frontend.test.cjs
+	go test -count=1 ./tests/unit
+	node --test tests/frontend/frontend.test.cjs
+unit-test:
+	go test -count=1 ./tests/unit
 frontend-test:
-	node --test tests/frontend.test.cjs
+	node --test tests/frontend/frontend.test.cjs
 integration:
 	@test -n "$$INTEGRATION_MONGO_URI" || (echo '请设置 INTEGRATION_MONGO_URI'; exit 1)
-	go test -count=1 -race ./...
-	node --test tests/frontend.test.cjs
+	go test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out ./tests/unit ./tests/integration
+	node --test tests/frontend/frontend.test.cjs
+e2e:
+	@test -n "$$INTEGRATION_MONGO_URI" || (echo '请设置 INTEGRATION_MONGO_URI'; exit 1)
+	RUN_E2E=1 python3 scripts/with-browser-tools.py go test -count=1 -race -v ./tests/e2e
+verify: integration e2e vet build
 vet:
 	go vet ./...
 build:

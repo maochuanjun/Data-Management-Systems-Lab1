@@ -1,0 +1,29 @@
+{
+  "schemaVersion": {
+    "$numberInt": "1"
+  },
+  "_id": "legacy-response",
+  "surveyId": "legacy-published",
+  "userId": "legacy-respondent",
+  "anonymous": false,
+  "answers": {
+    "single": "continue",
+    "multiple": [
+      "a",
+      "b"
+    ],
+    "text": "原始答案",
+    "number": {
+      "$numberDouble": "10.0"
+    }
+  },
+  "path": [
+    "single",
+    "multiple",
+    "text",
+    "number"
+  ],
+  "submittedAt": {
+    "$date": "2025-01-02T03:04:05Z"
+  }
+}

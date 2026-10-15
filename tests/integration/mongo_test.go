@@ -1,44 +1,18 @@
-package store
+package integration_test
 
 import (
-	"context"
-	"crypto/rand"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"questionnaire/internal/domain"
+	"questionnaire/tests/support"
 )
 
-func statsTestStore(t *testing.T) (*Store, context.Context) {
-	t.Helper()
-	uri := os.Getenv("INTEGRATION_MONGO_URI")
-	if uri == "" {
-		t.Skip("set INTEGRATION_MONGO_URI to run MongoDB regression tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	t.Cleanup(cancel)
-	repo, err := New(ctx, uri, "questionnaire_test_stats_"+rand.Text())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		cleanup, done := context.WithTimeout(context.Background(), 15*time.Second)
-		defer done()
-		if err := repo.db.Drop(cleanup); err != nil {
-			t.Error(err)
-		}
-		if err := repo.Close(cleanup); err != nil {
-			t.Error(err)
-		}
-	})
-	return repo, ctx
-}
-
 func TestStatsLargeTextResponses(t *testing.T) {
-	repo, ctx := statsTestStore(t)
+	fixture := support.NewMongo(t)
+	repo, ctx := fixture.Store, fixture.Context
 	survey := &domain.Survey{ID: "capacity", Title: "capacity", Questions: []domain.Question{{ID: "text", Title: "text", Type: "text", Required: true}}}
 	value := strings.Repeat("中", 10000)
 	answers, path, err := domain.ValidateSubmission(survey, map[string]any{"text": value})
@@ -49,7 +23,7 @@ func TestStatsLargeTextResponses(t *testing.T) {
 	for i := range documents {
 		documents[i] = &domain.Response{SchemaVersion: 1, ID: fmt.Sprintf("%04d", i), SurveyID: survey.ID, Anonymous: true, Answers: answers, Path: path, SubmittedAt: time.Unix(0, 0)}
 	}
-	if _, err := repo.db.Collection("responses").InsertMany(ctx, documents); err != nil {
+	if _, err := fixture.DB.Collection("responses").InsertMany(ctx, documents); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := repo.Stats(ctx, survey, 0, 50)
@@ -79,7 +53,8 @@ func TestStatsLargeTextResponses(t *testing.T) {
 }
 
 func TestStatsPaginationAndSummaries(t *testing.T) {
-	repo, ctx := statsTestStore(t)
+	fixture := support.NewMongo(t)
+	repo, ctx := fixture.Store, fixture.Context
 	choices := []domain.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}, {ID: "c", Label: "C"}}
 	survey := &domain.Survey{ID: "pages", Questions: []domain.Question{
 		{ID: "text", Title: "Text", Type: "text"},
@@ -154,7 +129,8 @@ func TestStatsPaginationAndSummaries(t *testing.T) {
 }
 
 func TestStatsEmptySurveys(t *testing.T) {
-	repo, ctx := statsTestStore(t)
+	fixture := support.NewMongo(t)
+	repo, ctx := fixture.Store, fixture.Context
 	for _, questions := range [][]domain.Question{nil, {{ID: "q", Title: "Number", Type: "number"}}} {
 		stats, err := repo.Stats(ctx, &domain.Survey{ID: "empty", Questions: questions}, 0, 20)
 		if err != nil {
@@ -171,16 +147,6 @@ func TestStatsEmptySurveys(t *testing.T) {
 			if q["answered"] != int64(0) || q["average"] != nil || q["hasMore"] != false || len(q["values"].([]any)) != 0 || q["values"].([]any) == nil {
 				t.Fatalf("incorrect empty question stats: %v", q)
 			}
-		}
-	}
-}
-
-func TestStatsRejectsInvalidPagination(t *testing.T) {
-	// Invalid parameters must be rejected before any database access.
-	repo := &Store{}
-	for _, page := range [][2]int{{-1, 20}, {0, -1}, {0, 0}, {0, 51}} {
-		if _, err := repo.Stats(context.Background(), &domain.Survey{}, page[0], page[1]); err == nil {
-			t.Errorf("accepted offset=%d limit=%d", page[0], page[1])
 		}
 	}
 }

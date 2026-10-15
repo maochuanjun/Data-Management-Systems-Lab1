@@ -82,7 +82,7 @@ async function browser(handler) {
       return {ok:true, json:async () => clone(data)};
     }
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../internal/web/static/app.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../internal/web/static/app.js'), 'utf8'), context);
   await flush();
   return {calls, nodes, context, view:name => vm.runInContext(`${name}('s')`, context)};
 }
@@ -244,14 +244,38 @@ test('statistics page raw text and numbers independently, keeping complete total
   assert.equal(card(root, 'Number answers'), numberCard, 'other questions retain their DOM and page');
   assert.equal(card(root, 'Choice answers'), choiceCard);
   assert.match(text(numberCard), /平均值：11/);
-  assert.match(text(choiceCard), /21 人 · 100%/);
+  assert.match(text(choiceCard), /21 次选择 · 100%/);
   waitForPage = false;
   await click(findButton(textCard, '上一页'));
   assert.match(text(textCard), /Answer 1/);
   await click(findButton(numberCard, '下一页'));
   assert.match(text(numberCard), /平均值：11/);
-  assert.match(text(numberCard), /21 人回答/);
+  assert.match(text(numberCard), /21 份回答/);
   assert.deepEqual(walk(numberCard).filter(node => node.tag === 'li').map(text), ['21']);
+});
+
+test('statistics pagination refreshes returned summaries when new submissions arrive', async () => {
+  const pending = deferred();
+  const ui = await browser(request => {
+    if (request.url.includes('/stats?')) return pending.promise;
+    return request.url.endsWith('/stats') ? statistics() : draft();
+  });
+  const root = await ui.view('statsView');
+  const numberCard = card(root, 'Number answers'), choiceCard = card(root, 'Choice answers');
+  const total = walk(root).find(node => node.className === 'large-number');
+  const originalChoices = text(choiceCard);
+  const paging = click(findButton(numberCard, '下一页'));
+  assert.equal(text(total), '21', 'keep the previous total while the request is pending');
+  assert.match(text(numberCard), /平均值：11/);
+  pending.resolve({totalResponses:22, questions:[{...statistics().questions[1], answered:22,
+    average:15, values:[21, 99], valuesOffset:20, hasMore:false}]});
+  await paging;
+  assert.match(text(numberCard), /平均值：15/);
+  assert.match(text(numberCard), /22 份回答/);
+  assert.equal(text(total), '22');
+  assert.deepEqual(walk(numberCard).filter(node => node.tag === 'li').map(text), ['21', '99']);
+  assert.equal(text(choiceCard), originalChoices, 'do not fabricate refreshed summaries for other questions');
+  assert.match(text(card(root, 'Text answers')), /21 份回答/);
 });
 
 test('failed statistics pagination retains the current page and allows retry', async () => {
@@ -259,7 +283,7 @@ test('failed statistics pagination retains the current page and allows retry', a
   const ui = await browser(request => {
     if (request.url.includes('/stats?')) {
       if (fail) throw new Error('Page unavailable');
-      return {questions:[{...statistics().questions[0], values:['Last'], valuesOffset:20, hasMore:false}]};
+      return {totalResponses:21, questions:[{...statistics().questions[0], values:['Last'], valuesOffset:20, hasMore:false}]};
     }
     return request.url.endsWith('/stats') ? statistics() : draft();
   });
@@ -267,6 +291,7 @@ test('failed statistics pagination retains the current page and allows retry', a
   const question = card(root, 'Text answers');
   await click(findButton(question, '下一页'));
   assert.match(text(question), /Answer 1/);
+  assert.equal(text(walk(root).find(node => node.className === 'large-number')), '21');
   assert.match(text(ui.nodes['#notice']), /Page unavailable/);
   assert.equal(disabled(findButton(question, '下一页')), false);
   fail = false;
@@ -288,7 +313,7 @@ test('switching question filters during pagination refreshes the visible card an
   change(filter, 'text & special', 'change');
   const visible = card(root, 'Text answers');
   assert.ok(disabled(findButton(visible, '下一页')));
-  pending.resolve({questions:[{...statistics().questions[0], values:['Last'], valuesOffset:20, hasMore:false}]});
+  pending.resolve({totalResponses:21, questions:[{...statistics().questions[0], values:['Last'], valuesOffset:20, hasMore:false}]});
   await paging;
   assert.match(text(visible), /Last/);
   assert.equal(disabled(findButton(visible, '上一页')), false);
@@ -307,11 +332,12 @@ for (const outcome of ['resolve', 'reject']) {
     vm.runInContext("go('/login')", ui.context);
     await flush();
     const current = text(ui.nodes['#app']);
-    if (outcome === 'resolve') pending.resolve({questions:[{...statistics().questions[0], values:['Stale value'], valuesOffset:20, hasMore:false}]});
+    if (outcome === 'resolve') pending.resolve({totalResponses:22, questions:[{...statistics().questions[0], values:['Stale value'], valuesOffset:20, hasMore:false}]});
     else pending.reject(new Error('Stale error'));
     await paging;
     assert.equal(text(ui.nodes['#app']), current);
     assert.equal(ui.nodes['#notice'].hidden, true);
     assert.doesNotMatch(text(root), /Stale value/);
+    assert.equal(text(walk(root).find(node => node.className === 'large-number')), '21');
   });
 }
