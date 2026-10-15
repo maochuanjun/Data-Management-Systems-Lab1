@@ -1,0 +1,408 @@
+package web_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"questionnaire/internal/domain"
+	"questionnaire/internal/store"
+	"questionnaire/internal/web"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+type integrationHTTP struct {
+	url    string
+	client *http.Client
+}
+
+func (c integrationHTTP) send(method, path string, body any) (int, []byte, error) {
+	var data []byte
+	var err error
+	if body != nil {
+		data, err = json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+	}
+	req, err := http.NewRequest(method, c.url+path, bytes.NewReader(data))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	response, err := c.client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	data, err = io.ReadAll(response.Body)
+	return response.StatusCode, data, err
+}
+
+func (c integrationHTTP) must(t *testing.T, method, path string, body any, want int) []byte {
+	t.Helper()
+	status, data, err := c.send(method, path, body)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	if status != want {
+		t.Fatalf("%s %s: status %d, want %d; body %s", method, path, status, want, data)
+	}
+	return data
+}
+
+func integrationDecode[T any](t *testing.T, data []byte) T {
+	t.Helper()
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
+	}
+	return value
+}
+
+func integrationInt(n int) *int           { return &n }
+func integrationFloat(n float64) *float64 { return &n }
+func integrationAnswers(anonymous bool, answers map[string]any) map[string]any {
+	return map[string]any{"anonymous": anonymous, "answers": answers}
+}
+
+// Set INTEGRATION_MONGO_URI to opt in. Every run creates and drops only its own
+// randomly named questionnaire_test_* database, never the URI's default DB.
+func TestMongoHTTPIntegration(t *testing.T) {
+	uri := os.Getenv("INTEGRATION_MONGO_URI")
+	if uri == "" {
+		t.Skip("set INTEGRATION_MONGO_URI to run real MongoDB integration tests")
+	}
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	database := "questionnaire_test_" + hex.EncodeToString(random[:])
+	raw, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := raw.Database(database)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := db.Drop(ctx); err != nil {
+			t.Errorf("drop exact test DB %s: %v", database, err)
+		}
+		if err := raw.Disconnect(ctx); err != nil {
+			t.Errorf("disconnect inspection client: %v", err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	repo, err := store.New(ctx, uri, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := repo.Close(closeCtx); err != nil {
+			t.Errorf("close repository: %v", err)
+		}
+	})
+	server := httptest.NewServer(web.New(repo, false))
+	t.Cleanup(server.Close)
+	newClient := func() integrationHTTP {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return integrationHTTP{server.URL, &http.Client{Jar: jar, Timeout: 20 * time.Second}}
+	}
+	owner, alice, bob, charlie, guest := newClient(), newClient(), newClient(), newClient(), newClient()
+	password := "test-password-123"
+	var aliceID string
+	for i, client := range []integrationHTTP{owner, alice, bob, charlie} {
+		name := []string{"owner", "alice", "bob", "charlie"}[i]
+		user := integrationDecode[domain.User](t, client.must(t, "POST", "/api/register", map[string]string{"username": name, "password": password}, 201))
+		if user.ID == "" || user.Username != name {
+			t.Fatalf("bad account response: %#v", user)
+		}
+		if i == 1 {
+			aliceID = user.ID
+		}
+		client.must(t, "GET", "/api/me", nil, 200)
+	}
+	guest.must(t, "POST", "/api/register", map[string]string{"username": "alice", "password": password}, 409)
+	alice.must(t, "POST", "/api/logout", nil, 200)
+	alice.must(t, "GET", "/api/me", nil, 401)
+	alice.must(t, "POST", "/api/login", map[string]string{"username": "alice", "password": "wrong-password"}, 401)
+	alice.must(t, "POST", "/api/login", map[string]string{"username": "alice", "password": password}, 200)
+
+	draft := integrationDecode[domain.Survey](t, owner.must(t, "POST", "/api/surveys", domain.Survey{Title: "集成测试", AllowAnonymous: true}, 201))
+	private := "/api/surveys/" + draft.ID
+	public := "/api/public/surveys/" + draft.ID
+	owner.must(t, "POST", private+"/publish", nil, 400)
+	alice.must(t, "GET", public, nil, 404)
+	for _, suffix := range []string{"", "/stats"} {
+		alice.must(t, "GET", private+suffix, nil, 404)
+	}
+	alice.must(t, "PUT", private, draft, 404)
+	alice.must(t, "POST", private+"/publish", nil, 404)
+	if list := integrationDecode[[]domain.Survey](t, alice.must(t, "GET", "/api/surveys", nil, 200)); len(list) != 0 {
+		t.Fatalf("foreign survey in list: %#v", list)
+	}
+	if list := integrationDecode[[]domain.Survey](t, owner.must(t, "GET", "/api/surveys", nil, 200)); len(list) != 1 || list[0].ID != draft.ID {
+		t.Fatalf("owner list: %#v", list)
+	}
+
+	draft.Questions = []domain.Question{
+		{ID: "q1", Title: "单选", Type: "single", Required: true,
+			Options: []domain.Option{{ID: "a", Label: "跳过多选"}, {ID: "b", Label: "继续"}, {ID: "end", Label: "结束"}},
+			Rules:   []domain.Rule{{Operator: "eq", Value: "a", Target: "q3"}, {Operator: "eq", Value: "end", Target: "END"}}},
+		{ID: "q2", Title: "多选", Type: "multiple", Required: true,
+			Options:    []domain.Option{{ID: "x", Label: "甲"}, {ID: "y", Label: "乙"}, {ID: "z", Label: "结束"}},
+			Validation: domain.Validation{MinSelect: integrationInt(1), MaxSelect: integrationInt(2)},
+			Rules:      []domain.Rule{{Operator: "contains_all", Value: []any{"x", "y"}, Target: "q4"}, {Operator: "contains", Value: "z", Target: "END"}}},
+		{ID: "q3", Title: "数字", Type: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(0), Max: integrationFloat(100)},
+			Rules: []domain.Rule{{Operator: "gte", Value: 18.0, Target: "END"}}},
+		{ID: "q4", Title: "中文文本", Type: "text", Required: true, Validation: domain.Validation{MinLength: integrationInt(2), MaxLength: integrationInt(3)}},
+	}
+	updated := integrationDecode[domain.Survey](t, owner.must(t, "PUT", private, draft, 200))
+	if updated.Revision != draft.Revision+1 {
+		t.Fatalf("revision = %d", updated.Revision)
+	}
+	owner.must(t, "PUT", private, draft, 409)
+	published := integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/publish", nil, 200))
+	if published.Status != "published" || published.Revision != updated.Revision+1 {
+		t.Fatalf("publish = %#v", published)
+	}
+	owner.must(t, "PUT", private, updated, 409)
+	owner.must(t, "POST", private+"/publish", nil, 409)
+	guest.must(t, "GET", public, nil, 401)
+	guest.must(t, "POST", public+"/next", map[string]any{"questionId": "q1", "answer": "a"}, 401)
+	guest.must(t, "POST", public+"/responses", integrationAnswers(true, map[string]any{"q1": "end"}), 401)
+	publicBody := integrationDecode[map[string]any](t, alice.must(t, "GET", public, nil, 200))
+	if _, present := publicBody["ownerId"]; present {
+		t.Fatal("public survey exposes ownerId")
+	}
+
+	for _, tc := range []struct {
+		id     string
+		answer any
+		next   string
+	}{
+		{"q1", "a", "q3"}, {"q1", "b", "q2"}, {"q1", "end", "END"},
+		{"q2", []string{"x", "y"}, "q4"}, {"q2", []string{"z"}, "END"}, {"q2", []string{"x"}, "q3"},
+		{"q3", 18, "END"}, {"q3", 10, "q4"}, {"q4", "中文🙂", "END"},
+	} {
+		result := integrationDecode[map[string]any](t, alice.must(t, "POST", public+"/next", map[string]any{"questionId": tc.id, "answer": tc.answer}, 200))
+		if result["nextQuestionId"] != tc.next {
+			t.Errorf("next for %s %v = %v, want %s", tc.id, tc.answer, result, tc.next)
+		}
+	}
+	for _, tc := range []struct {
+		id     string
+		answer any
+	}{
+		{"q1", "missing"}, {"q2", []string{"x", "x"}}, {"q2", []string{}}, {"q2", []string{"x", "y", "z"}},
+		{"q3", 10.5}, {"q3", 101}, {"q3", -1}, {"q3", "18"}, {"q4", "中"}, {"q4", "中文测试"}, {"unknown", nil},
+	} {
+		alice.must(t, "POST", public+"/next", map[string]any{"questionId": tc.id, "answer": tc.answer}, 400)
+	}
+	for _, answers := range []map[string]any{
+		{"q1": "a"}, {"q1": "a", "q3": 10}, {"q1": "a", "q3": 20, "q2": nil},
+		{"q1": "end", "unknown": nil}, {"q1": "a", "q3": 20.5}, {"q1": "b", "q2": []string{"x", "y"}, "q4": "中"},
+	} {
+		alice.must(t, "POST", public+"/responses", integrationAnswers(true, answers), 400)
+	}
+
+	anonymous := integrationDecode[map[string]any](t, alice.must(t, "POST", public+"/responses", integrationAnswers(true, map[string]any{"q1": "a", "q3": 20}), 201))
+	var stored bson.M
+	if err := db.Collection("responses").FindOne(ctx, bson.M{"_id": anonymous["id"]}).Decode(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := stored["userId"]; present {
+		t.Fatal("anonymous response stores userId")
+	}
+	dedupe, ok := stored["dedupeKey"].(string)
+	if !ok || len(dedupe) != 64 || strings.Contains(dedupe, aliceID) {
+		t.Fatalf("invalid private dedupe key: %#v", stored)
+	}
+	if !reflect.DeepEqual(stored["path"], bson.A{"q1", "q3"}) {
+		t.Fatalf("server path: %#v", stored["path"])
+	}
+	for _, anonymous := range []bool{true, false} {
+		alice.must(t, "POST", public+"/responses", integrationAnswers(anonymous, map[string]any{"q1": "end"}), 409)
+	}
+	bob.must(t, "POST", public+"/responses", integrationAnswers(false, map[string]any{"q1": "b", "q2": []string{"x", "y"}, "q4": "中文🙂"}), 201)
+	charlie.must(t, "POST", public+"/responses", integrationAnswers(false, map[string]any{"q1": "b", "q2": []string{"x"}, "q3": 10, "q4": "中文"}), 201)
+
+	var stats struct {
+		Total     int `json:"totalResponses"`
+		Questions []struct {
+			ID       string   `json:"id"`
+			Answered int      `json:"answered"`
+			Average  *float64 `json:"average"`
+			Options  []struct {
+				ID    string `json:"id"`
+				Count int    `json:"count"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(owner.must(t, "GET", private+"/stats", nil, 200), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 3 || len(stats.Questions) != 4 {
+		t.Fatalf("stats totals: %#v", stats)
+	}
+	expectedAnswered := map[string]int{"q1": 3, "q2": 2, "q3": 2, "q4": 2}
+	expectedCounts := map[string]map[string]int{"q1": {"a": 1, "b": 2, "end": 0}, "q2": {"x": 2, "y": 1, "z": 0}}
+	for _, question := range stats.Questions {
+		if question.Answered != expectedAnswered[question.ID] {
+			t.Errorf("answered %s = %d", question.ID, question.Answered)
+		}
+		if question.ID == "q3" && (question.Average == nil || *question.Average != 15) {
+			t.Errorf("numeric average: %v", question.Average)
+		}
+		for _, option := range question.Options {
+			if option.Count != expectedCounts[question.ID][option.ID] {
+				t.Errorf("count %s.%s = %d", question.ID, option.ID, option.Count)
+			}
+		}
+	}
+	if err := json.Unmarshal(owner.must(t, "GET", private+"/stats?questionId=q3", nil, 200), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 3 || len(stats.Questions) != 1 || stats.Questions[0].ID != "q3" {
+		t.Fatalf("single question stats: %#v", stats)
+	}
+	owner.must(t, "GET", private+"/stats?questionId=unknown", nil, 404)
+
+	const attempts = 12
+	type outcome struct {
+		code int
+		body []byte
+		err  error
+	}
+	outcomes := make(chan outcome, attempts)
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < attempts; i++ {
+		workers.Add(1)
+		go func(anonymous bool) {
+			defer workers.Done()
+			<-start
+			code, body, err := owner.send("POST", public+"/responses", integrationAnswers(anonymous, map[string]any{"q1": "end"}))
+			outcomes <- outcome{code, body, err}
+		}(i%2 == 0)
+	}
+	close(start)
+	workers.Wait()
+	close(outcomes)
+	successes := 0
+	for result := range outcomes {
+		if result.err != nil {
+			t.Errorf("concurrent submit: %v", result.err)
+			continue
+		}
+		if result.code == 201 {
+			successes++
+		} else if result.code != 409 {
+			t.Errorf("concurrent status %d: %s", result.code, result.body)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent submissions saved %d, want exactly 1", successes)
+	}
+	if count, err := db.Collection("responses").CountDocuments(ctx, bson.M{"surveyId": draft.ID}); err != nil || count != 4 {
+		t.Fatalf("deduped response count %d: %v", count, err)
+	}
+
+	repeat := integrationDecode[domain.Survey](t, owner.must(t, "POST", "/api/surveys", domain.Survey{Title: "允许重复", AllowRepeat: true, Questions: []domain.Question{{ID: "n", Title: "数字", Type: "number", Required: true}}}, 201))
+	repeatPrivate := "/api/surveys/" + repeat.ID
+	repeatPublic := "/api/public/surveys/" + repeat.ID
+	owner.must(t, "POST", repeatPrivate+"/publish", nil, 200)
+	alice.must(t, "POST", repeatPublic+"/responses", integrationAnswers(true, map[string]any{"n": 0}), 400)
+	for i := 0; i < 5; i++ {
+		alice.must(t, "POST", repeatPublic+"/responses", integrationAnswers(false, map[string]any{"n": i}), 201)
+	}
+	if count, err := db.Collection("responses").CountDocuments(ctx, bson.M{"surveyId": repeat.ID}); err != nil || count != 5 {
+		t.Fatalf("repeat count %d: %v", count, err)
+	}
+	if count, err := db.Collection("responses").CountDocuments(ctx, bson.M{"surveyId": repeat.ID, "dedupeKey": bson.M{"$exists": true}}); err != nil || count != 0 {
+		t.Fatalf("repeat dedupe count %d: %v", count, err)
+	}
+	owner.must(t, "POST", repeatPrivate+"/close", nil, 200)
+	alice.must(t, "POST", repeatPublic+"/responses", integrationAnswers(false, map[string]any{"n": 0}), 409)
+	alice.must(t, "POST", repeatPublic+"/next", map[string]any{"questionId": "n", "answer": 0}, 409)
+
+	future := time.Now().Add(time.Hour)
+	expiring := integrationDecode[domain.Survey](t, owner.must(t, "POST", "/api/surveys", domain.Survey{Title: "截止时间", Deadline: &future, Questions: []domain.Question{{ID: "n", Title: "数字", Type: "number", Required: true}}}, 201))
+	owner.must(t, "POST", "/api/surveys/"+expiring.ID+"/publish", nil, 200)
+	// Advance this test document's deadline without relying on sleeps or clock races.
+	if _, err := db.Collection("surveys").UpdateOne(ctx, bson.M{"_id": expiring.ID}, bson.M{"$set": bson.M{"deadline": time.Now().Add(-time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	alice.must(t, "POST", "/api/public/surveys/"+expiring.ID+"/responses", integrationAnswers(false, map[string]any{"n": 1}), 409)
+	alice.must(t, "POST", "/api/public/surveys/"+expiring.ID+"/next", map[string]any{"questionId": "n", "answer": 1}, 409)
+	for _, collection := range []string{"users", "sessions", "surveys", "responses"} {
+		_, err := db.Collection(collection).InsertOne(ctx, bson.M{"_id": "invalid-document"})
+		if err == nil {
+			t.Errorf("%s accepted invalid document", collection)
+		} else {
+			var writeErr mongo.WriteException
+			if !errors.As(err, &writeErr) || !writeErr.HasErrorCode(121) {
+				t.Errorf("%s failed for unexpected reason: %v", collection, err)
+			}
+		}
+	}
+}
+
+func TestIntegrationHTTPGuardAndJSON(t *testing.T) {
+	handler := web.New(nil, false)
+	for _, tc := range []struct {
+		name, body, contentType, origin, fetch string
+		want                                   int
+	}{
+		{"malformed", "{", "application/json", "", "", 400},
+		{"unknown field", `{"username":"alice","password":"password123","extra":true}`, "application/json", "", "", 400},
+		{"trailing JSON", `{} {}`, "application/json", "", "", 400},
+		{"wrong media type", `{}`, "text/plain", "", "", 400},
+		{"cross origin", `{}`, "application/json", "https://attacker.invalid", "", 403},
+		{"cross site", `{}`, "application/json", "", "cross-site", 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "http://example.test/api/register", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Sec-Fetch-Site", tc.fetch)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			response := recorder.Result()
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != tc.want {
+				t.Fatalf("status %d, want %d: %s", response.StatusCode, tc.want, body)
+			}
+			if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatal("security/cache headers missing")
+			}
+		})
+	}
+}

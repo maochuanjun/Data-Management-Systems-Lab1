@@ -213,6 +213,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	u := &domain.User{ID: newID(), Username: c.Username, PasswordHash: string(hash), CreatedAt: time.Now().UTC()}
 	if err := s.repo.CreateUser(r.Context(), u); err != nil {
+		if errors.Is(err, store.ErrDuplicate) {
+			fail(w, 409, "用户名已存在，请选择其他用户名")
+			return
+		}
 		s.dbError(w, err)
 		return
 	}
@@ -503,6 +507,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.repo.InsertResponse(r.Context(), response, dedupe); err != nil {
+		if errors.Is(err, store.ErrDuplicate) {
+			fail(w, 409, "你已经提交过这份问卷，本问卷不允许重复填写")
+			return
+		}
 		s.dbError(w, err)
 		return
 	}

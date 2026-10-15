@@ -222,39 +222,52 @@ func (s *Store) InsertResponse(ctx context.Context, response *domain.Response, d
 	return translate(err)
 }
 
-// Stats uses MongoDB aggregation for answered counts, values, and numeric means.
-// Only answer fields are projected, so participant identities cannot leak here.
+// Stats feeds the same matching response stream into every facet, keeping the
+// total and per-question counts consistent even while new answers arrive.
+// Only answer fields are aggregated; participant identities are never returned.
 func (s *Store) Stats(ctx context.Context, survey *domain.Survey) (map[string]any, error) {
-	responses := s.db.Collection("responses")
-	total, err := responses.CountDocuments(ctx, bson.M{"surveyId": survey.ID})
-	if err != nil {
-		return nil, err
-	}
-	questions := make([]map[string]any, 0, len(survey.Questions))
-	for _, q := range survey.Questions {
+	facets := bson.M{"total": mongo.Pipeline{{{Key: "$count", Value: "count"}}}}
+	for i, q := range survey.Questions {
 		field := "answers." + q.ID
 		group := bson.M{"_id": nil, "answered": bson.M{"$sum": 1}, "values": bson.M{"$push": "$" + field}}
 		if q.Type == "number" {
 			group["average"] = bson.M{"$avg": "$" + field}
 		}
-		pipeline := mongo.Pipeline{
-			{{Key: "$match", Value: bson.M{"surveyId": survey.ID, field: bson.M{"$exists": true, "$ne": nil}}}},
+		facets[fmt.Sprintf("q%d", i)] = mongo.Pipeline{
+			{{Key: "$match", Value: bson.M{field: bson.M{"$exists": true, "$ne": nil}}}},
 			{{Key: "$group", Value: group}},
 		}
-		cursor, err := responses.Aggregate(ctx, pipeline)
-		if err != nil {
-			return nil, err
-		}
-		var rows []struct {
-			Answered int64    `bson:"answered"`
-			Values   []any    `bson:"values"`
-			Average  *float64 `bson:"average"`
-		}
-		err = cursor.All(ctx, &rows)
-		_ = cursor.Close(ctx)
-		if err != nil {
-			return nil, err
-		}
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"surveyId": survey.ID}}},
+		{{Key: "$facet", Value: facets}},
+	}
+	cursor, err := s.db.Collection("responses").Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	type aggregateRow struct {
+		Count    int64    `bson:"count"`
+		Answered int64    `bson:"answered"`
+		Values   []any    `bson:"values"`
+		Average  *float64 `bson:"average"`
+	}
+	var results []map[string][]aggregateRow
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, err
+	}
+	aggregates := make(map[string][]aggregateRow)
+	if len(results) > 0 {
+		aggregates = results[0]
+	}
+	total := int64(0)
+	if rows := aggregates["total"]; len(rows) > 0 {
+		total = rows[0].Count
+	}
+	questions := make([]map[string]any, 0, len(survey.Questions))
+	for i, q := range survey.Questions {
+		rows := aggregates[fmt.Sprintf("q%d", i)]
 		values := make([]any, 0)
 		answered := int64(0)
 		var average any
