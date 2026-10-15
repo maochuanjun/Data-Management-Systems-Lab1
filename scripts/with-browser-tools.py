@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Discover existing browser test tools; never install application dependencies."""
+
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def node_output(source, *args):
@@ -32,23 +33,34 @@ def main():
         if installed:
             module = str(max(installed, key=lambda p: p.stat().st_mtime))
     if not module:
-        sys.exit("E2E 需要已有的 Playwright 安装；请设置 PLAYWRIGHT_MODULE 指向该模块。")
+        sys.exit(
+            "E2E 需要已有的 Playwright 安装；请设置 PLAYWRIGHT_MODULE 指向该模块。"
+        )
     env["PLAYWRIGHT_MODULE"] = module
     if not env.get("PLAYWRIGHT_EXECUTABLE_PATH"):
         default = node_output(
-            "process.stdout.write(require(process.argv[1]).chromium.executablePath())", module
+            "process.stdout.write(require(process.argv[1]).chromium.executablePath())",
+            module,
         )
         if default and Path(default).is_file():
             env["PLAYWRIGHT_EXECUTABLE_PATH"] = default
         else:
             cache = Path.home() / ".cache/ms-playwright"
-            candidates = list(cache.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"))
+            candidates = list(
+                cache.glob(
+                    "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
+                )
+            )
             candidates += list(cache.glob("chromium-*/chrome-linux64/chrome"))
             candidates += [Path("/usr/bin/chromium"), Path("/opt/google/chrome/chrome")]
             installed = [p for p in candidates if p.is_file()]
             if not installed:
-                sys.exit("E2E 需要 Chromium；请设置 PLAYWRIGHT_EXECUTABLE_PATH 指向已有浏览器。")
-            env["PLAYWRIGHT_EXECUTABLE_PATH"] = str(max(installed, key=lambda p: p.stat().st_mtime))
+                sys.exit(
+                    "E2E 需要 Chromium；请设置 PLAYWRIGHT_EXECUTABLE_PATH 指向已有浏览器。"
+                )
+            env["PLAYWRIGHT_EXECUTABLE_PATH"] = str(
+                max(installed, key=lambda p: p.stat().st_mtime)
+            )
     os.execvpe(sys.argv[1], sys.argv[1:], env)
 
 
