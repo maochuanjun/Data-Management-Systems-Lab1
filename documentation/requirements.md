@@ -38,3 +38,26 @@
 ## 后续演进预留
 
 不把规则写死在页面或后端分支中；题目、选项和规则均随问卷文档保存。`schemaVersion` 和 `revision` 为后续迁移、兼容旧数据和并发编辑提供边界。后续版本应基于本结构增量修改，并保留变更与兼容策略。
+
+## 初始需求验收映射
+
+本轮重新对照本地原始需求核对；核心功能均有实现和自动化证据。原始文件保持本地忽略，不纳入项目仓库。
+
+| 需求 | 实现位置 | 自动化验收 |
+| --- | --- | --- |
+| 注册、登录、注册时间、自己的问卷与统计 | web/server.go，store/mongo.go | tests/integration/http_test.go 的账号、越权和所有权断言 |
+| 标题、说明、匿名、列表、发布、截止、关闭、分享链接 | domain/models.go，web/server.go，static/app.js | HTTP 生命周期回归与 tests/e2e 实际页面操作 |
+| 单选选项与必答 | domain/logic.go | 单元和HTTP测试的合法、缺失及不存在选项 |
+| 多选最少、最多、恰好N项 | domain/logic.go | TestMultipleChoiceExactCount 与真实HTTP精确两项用例 |
+| 文本长度、数字范围和整数 | domain/logic.go | Unicode长度、边界/精度、不可满足必答配置与E2E错误提示 |
+| 单选、多选、数字跳转，可配置规则 | domain/logic.go，questions.rules | TestNextQuestion、TestMultipleRulesAndNamedArrays 与HTTP/E2E路径断言 |
+| 顺序填写、错误提示、提交保存 | web/server.go，static/app.js | 服务端路径重算、跳过题伪造答案拒绝及真实浏览器填写 |
+| 多人同时填写 | MongoDB响应独立文档、HTTP并发处理 | TestDistinctAccountsSubmitConcurrently，8个账号全部首次成功 |
+| 匿名、可配置重复填写 | 会话用户、内部去重键与部分唯一索引 | 匿名不含userId，12同账号并发恰好成功1次，允许重复保存5份 |
+| 选项计数、回答份数、所有文本内容、数字均值 | 有界MongoDB聚合与原始答案分页 | TestStatsPaginationAndSummaries、长文本容量与22份E2E分页 |
+| 整卷和单题自动统计 | stats与questionId参数 | HTTP单题过滤和浏览器筛选/翻页 |
+| 代码、MongoDB schema、配置及API说明 | internal/store、README和documentation | 构建、集合Schema拒绝非法数据、文档链接检查 |
+| 测试步骤、输入、输出、结果 | tests与documentation/testing.md | 分层用例及本轮真实执行记录 |
+| 开发报告与真实AI记录 | development-report.md、ai-log.md | 保留实际提示、修正、验证结果及Git记录 |
+
+允许重复提交时“回答份数/选择次数”按提交记录统计，并非去重人数。所有文本内容可通过分页遍历，不能将第一页误认为全部答案。第二阶段的具体新需求尚未发布，当前通过固定v1数据回归保护旧功能与旧数据，详见 [扩展约定](evolution.md)。

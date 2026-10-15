@@ -21,10 +21,10 @@
 2026-10-15 追加：用户要求“全面排查、测试”，随后要求“尝试修复，并补充回归测试”。先复现并记录4类缺陷，再修改领域、存储、HTTP与前端实现，补充Go/MongoDB及21项无依赖前端回归，并更新API分页契约。真实MongoDB `make integration`、`go vet`、编译、JS语法与浏览器验证均通过；测试仅使用并清理独立随机测试数据库。审查还发现并修正了翻页期间切换筛选的竞态。代码和文档未提交Git，也未批量修改既有问卷数据。详情见 `audit-2026-10-15.md`。
 
 - `internal/domain/models.go`：用户、问卷、题目、选项、规则和回答模型。
-- `internal/domain/logic.go` 与 `logic_test.go`：问卷/答案校验、顺序规则匹配、服务端作答路径推导与领域测试。
+- `internal/domain/logic.go` 与 `tests/unit/domain_test.go`：问卷/答案校验、顺序规则匹配、服务端作答路径推导与领域测试。
 - `internal/store/mongo.go`：MongoDB 连接、JSON Schema validator、索引、会话、问卷、回答与聚合统计。
 - `internal/web/server.go`、`cmd/server/main.go`：HTTP 路由、会话、认证、请求保护、启动与优雅关闭。
-- `internal/web/integration_test.go`：使用真实 MongoDB 的 HTTP 集成与并发验证。
+- `tests/integration/http_test.go`：使用真实 MongoDB 的 HTTP 集成与并发验证。
 - `internal/web/static/`：无依赖的单页交互界面。
 - `documentation/` 与 `README.md`：初始版本需求、设计、API、开发报告、运行说明和本记录。
 
@@ -40,3 +40,13 @@
 AI 输出是协作草案，不替代对实现、运行验证和记录的审查。
 
 本轮用户提供需求、技术栈、运行环境和产品约束；代码及上述修复由 AI 完成，没有把 AI 的修正记作用户手写代码。原始参考一度被加入首个本地提交，随后按用户要求在未发布前移除；当前 Git 历史不跟踪该文件。
+
+## 本轮整合与测试整理
+
+用户要求审查并使用另一窗口修复、保持第二阶段弹性、对齐初始需求，并将测试集中管理；随后明确更正为已有的 `tests/`，不是 `test/`。
+
+先执行原有真实MongoDB与21项前端回归，保留修复为提交b3ef842。独立审查确认全部核心需求已实现，另复现翻页显示新答案但汇总保留旧值的问题；新增失败测试后修复，前端现22项通过。统计单位明确为提交份数，避免允许重复时误称独立人数。
+
+将Go、前端及夹具测试迁至tests，公共API取代私有函数调用；补恰选2项、8账号并发、固定v1历史数据兼容。E2E复用已有Playwright与Chromium，没有新增业务依赖。首次编写E2E时对错误提示文案的预期与实际不符，修正测试断言后5个浏览器业务场景通过；没有修改业务逻辑迁就测试。
+
+整理后真实MongoDB加race、22项前端、真实浏览器及静态检查构建通过，核心包合并覆盖率85.6%。所有数据库测试使用并清理随机隔离库。用户作出目录与产品约束，代码整理和修复由AI完成。测试方法见testing.md，后续兼容边界见evolution.md。

@@ -217,9 +217,9 @@ go test ./...
 go vet ./...
 ```
 
-[logic_test.go](../internal/domain/logic_test.go) 使用表驱动测试：把输入、预期值和是否成功放进切片，再用 `t.Run` 遍历。遇到失败时输出具体用例名，比只看页面现象更容易定位原因。
+[logic_test.go](../tests/unit/domain_test.go) 使用表驱动测试：把输入、预期值和是否成功放进切片，再用 `t.Run` 遍历。遇到失败时输出具体用例名，比只看页面现象更容易定位原因。
 
-[集成测试文件](../internal/web/integration_test.go) 中的 `TestMongoHTTPIntegration` 在没有 `INTEGRATION_MONGO_URI` 时会明确跳过。要真正验证数据库、HTTP 和并发去重，可以使用现有本地数据库配置：
+[集成测试文件](../tests/integration/http_test.go) 中的 `TestMongoHTTPIntegration` 在没有 `INTEGRATION_MONGO_URI` 时会明确跳过。要真正验证数据库、HTTP 和并发去重，可以使用现有本地数据库配置：
 
 ```sh
 python3 scripts/with-local-mongo.py go test -count=1 -race ./...
@@ -247,3 +247,5 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true' \
 3. **区分“没回答”和“回答了被跳过的题”。** 构造 `q1 → q3` 的问卷，令 `q2` 必答。先提交 `q1` 与 `q3`，断言返回路径正确；再额外加入 `q2: nil`，断言提交失败。检查错误来自 `ValidateSubmission` 的哪个循环。
 
 每完成一个练习，运行 `gofmt` 格式化修改的 Go 文件，再执行 `go test ./internal/domain`。能通过测试说明并解释结果之后，再回到页面观察相同规则如何表现。
+
+测试目录已经统一为 `tests/`；新增真实浏览器验收及旧数据兼容回归，命令与分层见 [测试说明](testing.md)。
