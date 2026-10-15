@@ -9,10 +9,11 @@
 ```sh
 go version
 go mod download
-python3 scripts/with-local-mongo.py go run ./cmd/server
+cp .env.example .env # 首次运行；随后按实际环境修改 .env
+make run
 ```
 
-项目的 `go.mod` 要求 Go 1.26 或更新版本。`scripts/with-local-mongo.py` 会读取已有的本地 MongoDB 配置，默认位置是 `~/docker/mongodb/.env`；也可通过 `LOCAL_MONGO_ENV` 指定路径。脚本将连接信息放入子进程的环境变量，不打印密码。它默认选择 `questionnaire_lab1` 数据库。
+项目的 `go.mod` 要求 Go 1.26 或更新版本。`make run` 调用 `scripts/with-local-mongo.py`，从项目根目录加载被 Git 忽略的 `.env`，再把配置作为子进程环境启动 Go。脚本的位置决定项目根目录，因此不依赖执行命令时的当前目录；shell 中已有变量优先于 `.env`。`MONGO_URI` 是必填项，`MONGO_DB` 未设置时默认为 `questionnaire_lab1`。
 
 如果已有可用的 `MONGO_URI`，也可以直接运行：
 
@@ -22,7 +23,7 @@ export MONGO_DB='questionnaire_lab1'
 go run ./cmd/server
 ```
 
-这里的地址适用于仓库 `compose.yaml` 的本地 MongoDB；使用这套环境时先执行 `docker compose up -d mongodb`，等数据库就绪后启动 Go 服务。Go 程序读取进程环境变量，不会自动加载 `.env.example` 或 `.env`。
+这里的地址适用于仓库 `compose.yaml` 的本地 MongoDB；使用这套环境时先执行 `docker compose up -d mongodb`，等数据库就绪后启动 Go 服务。Go 程序只读取进程环境变量，不会自动加载 `.env.example` 或 `.env`；自动加载是包装脚本提供的开发便利。
 
 浏览器打开 `http://127.0.0.1:8080`，按顺序完成：注册 → 创建问卷 → 添加题目 → 保存草稿 → 发布 → 打开填写链接 → 提交 → 查看统计。可以先创建单选和文本两道题，再给单选题配置“选择某项后结束”，观察被跳过的必答文本题是否还需要回答。
 
@@ -211,26 +212,28 @@ bson.M{"_id": survey.ID, "ownerId": survey.OwnerID,
 先运行不要求 MongoDB 的测试：
 
 ```sh
-go test ./internal/domain -v
-go test ./internal/web -run TestIntegrationHTTPGuardAndJSON -v
-go test ./...
+go test ./tests/unit -run 'TestValidate|TestNextQuestion' -v
+go test ./tests/unit -run TestHTTPGuardAndJSON -v
+make test
 go vet ./...
 ```
 
 [logic_test.go](../tests/unit/domain_test.go) 使用表驱动测试：把输入、预期值和是否成功放进切片，再用 `t.Run` 遍历。遇到失败时输出具体用例名，比只看页面现象更容易定位原因。
 
-[集成测试文件](../tests/integration/http_test.go) 中的 `TestMongoHTTPIntegration` 在没有 `INTEGRATION_MONGO_URI` 时会明确跳过。要真正验证数据库、HTTP 和并发去重，可以使用现有本地数据库配置：
+[集成测试文件](../tests/integration/http_test.go) 中的 `TestMongoHTTPIntegration` 在没有 `INTEGRATION_MONGO_URI` 时会明确跳过。要真正验证数据库、HTTP 和并发去重，可以使用项目 `.env` 中的数据库配置：
 
 ```sh
-python3 scripts/with-local-mongo.py go test -count=1 -race ./...
+python3 scripts/with-local-mongo.py make integration
 ```
 
 或者显式指定可用于集成测试的 MongoDB：
 
 ```sh
 INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true' \
-  go test -count=1 -race ./...
+  make integration
 ```
+
+包装脚本中 `INTEGRATION_MONGO_URI` 未设置时默认继承 `MONGO_URI`；直接运行 `make integration` 时则必须显式提供它。
 
 测试为每次运行生成独立的 `questionnaire_test_<随机值>` 数据库，结束时清理该数据库。它启动真实 HTTP 测试服务器，使用独立 Cookie jar 模拟多个登录用户，并检查 MongoDB 中实际保存的文档。
 
@@ -242,10 +245,10 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true' \
 
 下面三个练习只需要在测试文件中添加用例，不改动运行中的数据或业务功能：
 
-1. **分清文本字节数和 rune 数。** 在 `logic_test.go` 增加测试，设置文本最大长度为 2，比较 `"中文"`、`"中文🙂"` 与 `"e\u0301"`。先写下预期结果，再用 `go test ./internal/domain -run Test你的测试名 -v` 检查。解释为什么最后一个输入的 rune 数是 2。
+1. **分清文本字节数和 rune 数。** 在 `tests/unit/domain_test.go` 增加测试，设置文本最大长度为 2，比较 `"中文"`、`"中文🙂"` 与 `"e\u0301"`。先写下预期结果，再用 `go test ./tests/unit -run Test你的测试名 -v` 检查。解释为什么最后一个输入的 rune 数是 2。
 2. **验证第一条规则优先。** 构造数字题，两条规则分别为 `gte 10 → q2` 和 `gte 18 → END`，回答 20 时预测下一题；交换规则顺序后再预测。为两个顺序分别写断言，观察 `NextQuestion` 的顺序语义。
 3. **区分“没回答”和“回答了被跳过的题”。** 构造 `q1 → q3` 的问卷，令 `q2` 必答。先提交 `q1` 与 `q3`，断言返回路径正确；再额外加入 `q2: nil`，断言提交失败。检查错误来自 `ValidateSubmission` 的哪个循环。
 
-每完成一个练习，运行 `gofmt` 格式化修改的 Go 文件，再执行 `go test ./internal/domain`。能通过测试说明并解释结果之后，再回到页面观察相同规则如何表现。
+每完成一个练习，运行 `gofmt` 格式化修改的 Go 文件，再执行 `go test ./tests/unit`。能通过测试说明并解释结果之后，再回到页面观察相同规则如何表现。
 
 测试目录已经统一为 `tests/`；新增真实浏览器验收及旧数据兼容回归，命令与分层见 [测试说明](testing.md)。

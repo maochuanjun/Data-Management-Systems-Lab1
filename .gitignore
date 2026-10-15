@@ -13,3 +13,5 @@ coverage.out
 *.test
 *.log
 .vscode/
+__pycache__/
+*.pyc

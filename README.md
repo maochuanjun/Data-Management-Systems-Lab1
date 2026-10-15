@@ -6,32 +6,34 @@ Go + MongoDB 在线问卷系统，支持账号、问卷编辑与发布、四种�
 
 环境要求：Go 1.26+、MongoDB。前端由 Go 程序提供，无 npm 构建步骤。
 
-使用已有的 `~/docker/mongodb/.env` 配置：
+首次运行时，从安全示例创建项目自己的本地配置，并按实际 MongoDB 修改连接信息：
 
 ```sh
+cp -n .env.example .env
+chmod 600 .env
 go mod download
-python3 scripts/with-local-mongo.py go run ./cmd/server
+make run
 ```
 
-打开 <http://127.0.0.1:8080>。脚本只读取现有认证配置，默认使用独立的 `questionnaire_lab1` 数据库，不复制密码或修改原 Docker 配置；已设置 `MONGO_URI` 时优先使用该值。完整流程见 [操作指南](documentation/user-guide.md)。
+打开 <http://127.0.0.1:8080>。`.env` 位于项目根目录、已被 Git 忽略，应仅保存本项目的本地配置，不要提交真实密码。`make run` 通过 `scripts/with-local-mongo.py` 加载该文件；脚本按项目位置查找 `.env`，不受当前工作目录影响。命令行已有环境变量优先于同名 `.env` 配置。完整流程见 [操作指南](documentation/user-guide.md)。
 
 也可使用本项目独立的开发 MongoDB：
 
 ```sh
 docker compose up -d
-export MONGO_URI='mongodb://127.0.0.1:27018/?directConnection=true'
-export MONGO_DB='questionnaire_lab1'
-go run ./cmd/server
+cp -n .env.example .env
+chmod 600 .env
+make run
 ```
 
-程序从环境变量读取 `MONGO_URI`、`MONGO_DB`、`LISTEN_ADDR`、`PORT`、`COOKIE_SECURE`，不会自动加载 `.env`；配置示例见 [.env.example](.env.example)。HTTPS 部署时设置 `COOKIE_SECURE=true`。`make build` 输出 `bin/survey-lab`。
+包装脚本会加载 `.env` 中的全部设置，并要求存在 `MONGO_URI`；`MONGO_DB` 未设置时使用 `questionnaire_lab1`，`INTEGRATION_MONGO_URI` 未设置时继承 `MONGO_URI`。Go 程序本身只读取进程环境变量，直接执行 `go run ./cmd/server` 不会自动加载 `.env`；如需直接运行，先在 shell 中设置环境变量，或执行 `python3 scripts/with-local-mongo.py go run ./cmd/server`。HTTPS 部署时设置 `COOKIE_SECURE=true`。配置项见 [.env.example](.env.example)，`make build` 输出 `bin/survey-lab`。
 
 ## 测试
 
 全部测试位于 [`tests/`](tests/)，业务代码目录不放测试文件。
 
 ```sh
-make test                                           # 快速单测 + 前端回归，无须 MongoDB
+make test                                           # Go/Python 单测 + 前端回归，无须 MongoDB
 python3 scripts/with-local-mongo.py make integration # 真实 MongoDB、HTTP、容量、兼容、竞态
 python3 scripts/with-local-mongo.py make e2e         # 真实 Chromium 端到端验收
 python3 scripts/with-local-mongo.py make verify      # 集成 + E2E + 静态检查 + 构建
@@ -39,7 +41,7 @@ python3 scripts/with-local-mongo.py make verify      # 集成 + E2E + 静态检�
 
 前端测试需要 Node.js。E2E 复用已有 Playwright 与 Chromium，由 `scripts/with-browser-tools.py` 自动发现；也可设置 `PLAYWRIGHT_MODULE` 与 `PLAYWRIGHT_EXECUTABLE_PATH` 指定安装位置。没有新增业务依赖，脚本不会自动安装测试工具。详细配置见 [测试说明](documentation/testing.md)。
 
-`make integration` 与 `make e2e` 在没有 `INTEGRATION_MONGO_URI` 时直接失败。每次数据库测试使用随机独立库并清理；不能把普通 `go test ./...` 中跳过数据库用例的结果当作完整验收。
+包装脚本会让 `INTEGRATION_MONGO_URI` 默认继承项目的 `MONGO_URI`；绕过包装脚本直接执行 `make integration` 或 `make e2e` 时，仍需自行设置 `INTEGRATION_MONGO_URI`。每次数据库测试使用随机独立库并清理；不能把普通 `go test ./...` 中跳过数据库用例的结果当作完整验收。
 
 ## 使用约定
 

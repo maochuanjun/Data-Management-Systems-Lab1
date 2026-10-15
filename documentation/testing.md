@@ -6,7 +6,7 @@
 
 | 目录 | 方法 | 验证内容 |
 | --- | --- | --- |
-| `tests/unit` | Go 表驱动单元测试、HTTP Recorder | 问卷及四题型校验、跳转、必答约束可满足性、精确选择数量、路径重算、JSON/跨站保护、分页参数 |
+| `tests/unit` | Go 表驱动单元测试、HTTP Recorder、Python `unittest` | 问卷及四题型校验、跳转、必答约束可满足性、精确选择数量、路径重算、JSON/跨站保护、分页参数、项目配置加载与环境优先级 |
 | `tests/integration` | 真实 MongoDB + HTTP 服务 + Cookie 客户端 | 权限、生命周期、匿名、重复策略、同账号并发去重、不同账号并发、统计、稳定分页、600份万字文本容量回归、Schema |
 | `tests/frontend` | Node 内置测试框架 + 轻量 DOM/事件替身 | 直接执行 app.js，验证特殊 ID、保存锁、失败恢复、翻页和过期响应；这部分不是浏览器测试 |
 | `tests/e2e` | Playwright 驱动真实 Chromium + Go HTTP 服务 + MongoDB | 真正点击网页注册、编辑四题型、发布、填写校验、跳转、匿名提交、拒绝重复、统计分页、关闭和移动视口 |
@@ -24,7 +24,9 @@ python3 scripts/with-local-mongo.py make e2e
 python3 scripts/with-local-mongo.py make verify
 ```
 
-`make test` 不需要 MongoDB，执行单元测试和22项前端回归。`make integration` 在缺少 `INTEGRATION_MONGO_URI` 时失败；提供后执行全部单元和真实数据库集成，开启 Go race detector，并用 `-coverpkg=./internal/...` 统计跨包覆盖率。报告为忽略的 `coverage.out`，查看 `go tool cover -func=coverage.out`。
+数据库测试使用项目根目录 `.env`：首次运行先复制 `.env.example` 为 `.env` 并填写 `MONGO_URI`。包装脚本从项目位置加载全部配置，shell 中已有变量优先；`INTEGRATION_MONGO_URI` 未设置时继承 `MONGO_URI`。它不读取项目外部的配置文件。
+
+`make test` 不需要 MongoDB，执行 Go 单元测试、项目配置加载器的 Python 单元测试和22项前端回归。配置测试确认脚本只使用项目 `.env`、shell 优先、不执行配置中的 shell 表达式且不会在错误信息中泄露配置值。绕过包装脚本直接运行 `make integration` 时，缺少 `INTEGRATION_MONGO_URI` 会失败；提供后执行全部单元和真实数据库集成，开启 Go race detector，并用 `-coverpkg=./internal/...` 统计跨包覆盖率。报告为忽略的 `coverage.out`，查看 `go tool cover -func=coverage.out`。
 
 `make e2e` 也要求数据库 URI，并开启真实浏览器用例；平常的 `go test ./...` 会跳过该 opt-in 用例。`make verify` 依次执行集成、E2E、go vet 和构建；它需要完整的开发测试工具，不能用快速测试结果替代。
 
@@ -53,6 +55,7 @@ python3 scripts/with-local-mongo.py make e2e
 | 跨包语句覆盖率 | internal/domain、store、web 合计85.6%，不包含 main 与测试辅助代码 |
 | make e2e | 5个实际浏览器业务场景通过；无 JavaScript 异常，390px统计页无横向溢出 |
 | 静态检查与构建 | go vet、Go构建、JS语法和Python辅助脚本语法通过 |
+| 项目配置迁移 | 6项Python配置回归通过：项目路径定位、全量加载、shell优先、测试URI继承、外部配置隔离、值不执行且错误不泄露配置内容 |
 
 ### 关键验收用例
 
@@ -73,3 +76,7 @@ python3 scripts/with-local-mongo.py make e2e
 | 浏览器分页 | 真浏览器提交特殊ID文本，补齐22份，20/2条翻页 | 完整可遍历，均值11.5，上一页/下一页正常 |
 
 这些是功能、回归、并发与一个特定容量问题的验收，不能当作全面生产负载、安全审计或所有浏览器兼容性结论。历史排查过程保留在 [审查记录](audit-2026-10-15.md)。
+
+## 项目配置迁移的实际验证
+
+本轮运行时仅加载项目根目录.env。首次集成因既有MongoDB容器已停止而连接失败；启动原容器、确认健康后，重新执行 `python3 scripts/with-local-mongo.py make integration` 全部通过，包含真实MongoDB与Go竞态、6项Python配置回归和22项前端测试。`make test` 也通过。未重跑业务逻辑未变化的浏览器E2E；之前的浏览器证据仍以其执行日期为准。

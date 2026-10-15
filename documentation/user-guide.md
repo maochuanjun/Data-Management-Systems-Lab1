@@ -2,15 +2,19 @@
 
 ## 运行最新代码
 
-在仓库根目录执行：
+当前工作区的连接配置已就位，直接执行 `make run`。首次克隆时在仓库根目录创建自己的配置：
 
 ```sh
-python3 scripts/with-local-mongo.py go run ./cmd/server
+cp -n .env.example .env # 首次克隆；已有配置时不会覆盖
+chmod 600 .env
+make run
 ```
+
+项目根目录的 `.env` 是本项目唯一的本地配置来源，已被 Git 忽略，不应提交真实凭据。包装脚本从项目位置定位 `.env`，因此从其他目录调用也不会误读当前目录的文件；shell 中已经设置的同名变量优先。`MONGO_URI` 必须提供，`MONGO_DB` 默认是 `questionnaire_lab1`。
 
 打开 `http://127.0.0.1:8080`。修改 Go 代码或网页文件后需重启：网页通过 `go:embed` 编译进程序，旧进程不会自动读取新文件。另一窗口的修复已保留为独立 Git 提交；启动时确保集合校验器和索引存在，无须另外执行数据迁移。
 
-如果 8080 已被占用，可以使用 `PORT=8081 python3 scripts/with-local-mongo.py go run ./cmd/server`。已有问卷和回答仍在 MongoDB 中，重启不会清空。
+如果 8080 已被占用，可以使用 `PORT=8081 make run`。Go 程序不会自行读取 `.env`；需要绕过 Makefile 时，使用 `python3 scripts/with-local-mongo.py go run ./cmd/server`，或先把所需变量导入 shell 再执行 `go run`。已有问卷和回答仍在 MongoDB 中，重启不会清空。
 
 ## 创建和发布
 
