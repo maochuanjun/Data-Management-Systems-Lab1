@@ -212,11 +212,12 @@ async function fillView(id){
 async function statsView(id){
   const generation=routeGeneration,pending=new Set();
   const [survey,stats]=await Promise.all([api('/api/surveys/'+id),api('/api/surveys/'+id+'/stats')]);
-  const root=el('div',{},hero('回答统计',survey.title,link('← 问卷详情','/edit/'+id)),el('section',{class:'card'},el('p',{class:'muted'},'有效提交总数'),el('div',{class:'large-number'},stats.totalResponses)));
+  const total=el('div',{class:'large-number',text:stats.totalResponses});
+  const root=el('div',{},hero('回答统计',survey.title,link('← 问卷详情','/edit/'+id)),el('section',{class:'card'},el('p',{class:'muted'},'有效提交总数'),total,el('p',{class:'help'},'按提交记录计数，允许重复提交时同一人可能有多份回答。跳过或未提交的答案不计数；选填题允许留空时，已提交的空文本和空选项仍计入本题回答数。'),el('p',{class:'help'},'翻页会更新当前题目和提交总数，其他题目保留上次查询结果；刷新页面可更新全部题目。')));
   const list=el('div'),cards=new Map();
   function paintQuestion(question,card){
-      card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 人回答 · 被跳过或未填写的题目不计入本题人数`));
-      if(['single','multiple'].includes(question.type))for(const option of question.options||[]){const percent=question.answered?Math.round(option.count/question.answered*100):0;card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{class:'muted'},`${option.count} 人 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));}
+      card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 份回答`));
+      if(['single','multiple'].includes(question.type))for(const option of question.options||[]){const percent=question.answered?Math.round(option.count/question.answered*100):0;card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{class:'muted'},`${option.count} 次选择 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));}
       else{
         const offset=question.valuesOffset||0,limit=question.valuesLimit||20;
         if(question.type==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));
@@ -234,6 +235,8 @@ async function statsView(id){
             if(generation!==routeGeneration)return;
             const result=page.questions.find(item=>item.id===question.id);
             question.values=result.values;question.valuesOffset=result.valuesOffset;question.valuesLimit=result.valuesLimit;question.hasMore=result.hasMore;
+            question.answered=result.answered;question.average=result.average;
+            stats.totalResponses=page.totalResponses;total.textContent=stats.totalResponses;
           }catch(error){if(generation===routeGeneration)throw error;}
           finally{pending.delete(question.id);if(generation===routeGeneration&&cards.has(question.id))paintQuestion(question,cards.get(question.id));}
         }
