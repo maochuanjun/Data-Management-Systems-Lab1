@@ -1,65 +1,82 @@
-# 问卷工坊
+# 在线问卷系统（第一阶段）
 
-Go + MongoDB 在线问卷系统，支持账号、问卷编辑与发布、四种题型、条件跳转、提交校验、匿名与重复策略、整卷和单题统计。
+课程项目：使用 Go 和 MongoDB 实现一个简化的在线问卷系统。填写者需要先登录；问卷创建者可以设计、发布和关闭问卷，并查看统计结果。
 
-## 启动
+## 已实现功能
 
-环境要求：Go 1.26+、MongoDB。前端由 Go 程序提供，无 npm 构建步骤。
+- 用户注册、登录、退出；创建者只能管理自己的问卷。
+- 创建草稿、编辑题目、发布、设置截止时间、关闭及分享问卷链接。
+- 单选、多选、文本和数字题；必填、数量、长度、范围及整数校验。
+- 单选、多选和数字题的可配置条件跳转；服务器在提交时重新校验整条作答路径。
+- 匿名提交和是否允许同账号重复提交的设置。
+- 整卷或单题统计：选项次数、回答份数、文本填写内容、数字平均值；原始内容按需分页。
+- 使用 MongoDB 保存全部业务数据与会话，不使用关系数据库或现成问卷系统。
 
-首次运行时，从安全示例创建项目自己的本地配置，并按实际 MongoDB 修改连接信息：
+## 本地运行
 
-```sh
-cp -n .env.example .env
-chmod 600 .env
-go mod download
-make run
-```
-
-打开 <http://127.0.0.1:8080>。`.env` 位于项目根目录、已被 Git 忽略，应仅保存本项目的本地配置，不要提交真实密码。`make run` 通过 `scripts/with-local-mongo.py` 加载该文件；脚本按项目位置查找 `.env`，不受当前工作目录影响。命令行已有环境变量优先于同名 `.env` 配置。完整流程见 [操作指南](documentation/user-guide.md)。
-
-也可使用本项目独立的开发 MongoDB：
+依赖：Go 1.26+、MongoDB、Python 3、Make；使用下面的容器示例时还需要 Docker Compose。
 
 ```sh
-docker compose up -d
+docker compose up -d            # 可选：启动本项目的 MongoDB（本机端口 27018）
 cp -n .env.example .env
 chmod 600 .env
 make run
 ```
 
-包装脚本会加载 `.env` 中的全部设置，并要求存在 `MONGO_URI`；`MONGO_DB` 未设置时使用 `questionnaire_lab1`，`INTEGRATION_MONGO_URI` 未设置时继承 `MONGO_URI`。Go 程序本身只读取进程环境变量，直接执行 `go run ./cmd/server` 不会自动加载 `.env`；如需直接运行，先在 shell 中设置环境变量，或执行 `python3 scripts/with-local-mongo.py go run ./cmd/server`。HTTPS 部署时设置 `COOKIE_SECURE=true`。配置项见 [.env.example](.env.example)，`make build` 输出 `bin/survey-lab`。
+默认访问地址：<http://127.0.0.1:8080>。首次克隆需按自己的 MongoDB 环境修改项目根目录的 `.env`；不要提交数据库账号或密码。`make run` 会加载项目的 `.env`，但直接执行 `go run ./cmd/server` 不会自动读取它。
+
+跨电脑演示时，可在受信任的局域网内设置 `LISTEN_ADDR=0.0.0.0`，并从其他电脑访问服务所在主机的局域网 IP；分享链接将基于浏览器实际打开的地址生成。默认的 `127.0.0.1` 链接不能被另一台电脑直接访问。不要把未配置访问控制的 MongoDB 或明文 HTTP 服务直接暴露到公网；正式 HTTPS 部署需设置 `COOKIE_SECURE=true`。
+
+## 演示步骤
+
+1. 注册账号 A，创建草稿并添加题目，设置必填和条件跳转。
+2. 保存并发布，复制问卷链接。
+3. 使用另一个浏览器会话注册账号 B，登录后按跳转规则填写、提交。
+4. 账号 A 查看整卷或单题统计；文本和数字原始答案可按需加载并翻页。
+5. 验证非法答案、重复提交、关闭或到期后的提交会被拒绝。
 
 ## 测试
 
-全部测试位于 [`tests/`](tests/)，业务代码目录不放测试文件。
+快速测试需要 Go、Python 3、Node.js，不需要 MongoDB：
 
 ```sh
-make test                                           # Go/Python 单测 + 前端回归，无须 MongoDB
-python3 scripts/with-local-mongo.py make integration # 真实 MongoDB、HTTP、容量、兼容、竞态
-python3 scripts/with-local-mongo.py make e2e         # 真实 Chromium 端到端验收
-python3 scripts/with-local-mongo.py make verify      # 集成 + E2E + 静态检查 + 构建
+make test
 ```
 
-前端测试需要 Node.js。E2E 复用已有 Playwright 与 Chromium，由 `scripts/with-browser-tools.py` 自动发现；也可设置 `PLAYWRIGHT_MODULE` 与 `PLAYWRIGHT_EXECUTABLE_PATH` 指定安装位置。没有新增业务依赖，脚本不会自动安装测试工具。详细配置见 [测试说明](documentation/testing.md)。
+真实数据库测试需要配置 `MONGO_URI`；浏览器验收还需要 Playwright 和 Chromium：
 
-包装脚本会让 `INTEGRATION_MONGO_URI` 默认继承项目的 `MONGO_URI`；绕过包装脚本直接执行 `make integration` 或 `make e2e` 时，仍需自行设置 `INTEGRATION_MONGO_URI`。每次数据库测试使用随机独立库并清理；不能把普通 `go test ./...` 中跳过数据库用例的结果当作完整验收。
+```sh
+python3 scripts/with-local-mongo.py make integration
+python3 scripts/with-local-mongo.py make e2e
+python3 scripts/with-local-mongo.py make verify
+```
 
-## 使用约定
+数据库测试只使用自动创建的独立测试库，不修改正常项目数据。具体环境、用例及历史执行结果见 [测试说明](documentation/testing.md)。`make test` 不能代替真实数据库和浏览器验收。
 
-- 所有填写者先登录；允许匿名表示提交结果不展示账号关联。
-- 发布后冻结题目与配置，创建者可以关闭问卷；截止时间由服务器校验。
-- 跳转按配置顺序匹配第一条，只能跳到后续题目或结束；提交时服务器重新推导路径。
-- 不允许重复时按账号去重，匿名也受限制；允许重复时按提交份数统计。
-- 文本和数字原始答案默认每页 20 条，可逐页查看全部内容；计数与均值覆盖全部回答。
+## 项目结构
+
+```text
+cmd/server/              程序入口
+internal/domain/         模型、题目校验、跳转与作答路径
+internal/store/          MongoDB 集合、索引、读写与统计
+internal/web/            HTTP 接口、认证与静态前端
+tests/                   单元、集成、前端及浏览器测试
+tests/fixtures/v1/       第一阶段历史数据兼容用例
+scripts/                 本地配置与浏览器测试辅助脚本
+documentation/           设计、API、测试及 AI 使用记录
+项目完成报告.md           第一阶段项目完成报告
+```
 
 ## 文档
 
-- [操作指南](documentation/user-guide.md)
-- [需求与验收映射](documentation/requirements.md)
+- [项目完成报告](项目完成报告.md)
 - [系统与 MongoDB 设计](documentation/design.md)
 - [HTTP API](documentation/api.md)
-- [测试分层及记录](documentation/testing.md)
-- [第二阶段扩展约定](documentation/evolution.md)
-- [Go 代码讲解](documentation/go-walkthrough.md)
-- [开发报告](documentation/development-report.md)、[AI 记录](documentation/ai-log.md)、[审查与修复记录](documentation/audit-2026-10-15.md)
+- [测试用例与执行记录](documentation/testing.md)
+- [AI 使用记录](documentation/ai-log.md)
 
-原始本地需求参考位于被 Git 忽略的 `docs/`，不纳入产品仓库。版本 1 数据基线位于 [`tests/fixtures/v1/`](tests/fixtures/v1/)，后续版本应持续执行兼容回归。
+## 当前约束
+
+发布后问卷题目及配置不可编辑；条件跳转只允许向后跳或结束，避免循环。匿名提交不在答案中直接保存账号 ID，但仅提供业务界面的匿名性，不等同于数据库管理员无法关联身份。统计以提交份数计数，允许重复时不代表独立人数。关闭与同时写入的请求不是严格事务原子边界。
+
+第二阶段应在现有代码基础上增量扩展，保留已有结构、接口测试和 v1 数据兼容测试，不把第一阶段推倒重做。

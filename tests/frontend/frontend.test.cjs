@@ -78,7 +78,11 @@ async function browser(handler) {
     async fetch(url, options) {
       const request = {url, method:options.method, body:options.body === undefined ? undefined : JSON.parse(options.body)};
       calls.push(request);
-      const data = url === '/api/me' ? {username:'owner'} : await handler(request);
+      const query = url.includes('?') ? new URLSearchParams(url.split('?')[1]) : null;
+      const data = url === '/api/me' ? {username:'owner'}
+        : url.endsWith('/stats?summaryOnly=true') ? statisticsSummary()
+        : url.includes('/stats?questionId=') && query.get('offset') === '0' ? statisticsPage(query.get('questionId'))
+        : await handler(request);
       return {ok:true, json:async () => clone(data)};
     }
   });
@@ -133,6 +137,43 @@ for (const id of ['__proto__', 'constructor', 'toString']) {
       assert.match(text(root), /提交成功/);
     });
   }
+}
+
+
+for(const result of ['resolve','reject']){
+  test(`submitting blocks back navigation until the response ${result}s`,async()=>{
+    const pending=deferred();
+    const survey={...draft(),status:'published',questions:[
+      {id:'q',title:'Question',type:'text',required:true,validation:{}}]};
+    const ui=await browser(({url,body})=>{
+      if(url.endsWith('/next'))return {answer:body.answer,nextQuestionId:'END'};
+      if(url.endsWith('/responses'))return pending.promise;
+      return survey;
+    });
+    const root=await ui.view('fillView');
+    change(walk(root).find(n=>n.tag==='textarea'),'My answer');
+    await click(findButton(root,'下一步'));
+    const back=findButton(root,'上一步');
+    const submit=click(findButton(root,'提交问卷'));
+    assert.equal(disabled(back),true,'Back must be disabled while writing a response');
+    const anonymous=walk(root).find(n=>n.tag==='input' && n.type==='checkbox');
+    assert.equal(disabled(anonymous),true,'Anonymity must not be changed during submission');
+    await click(back);
+    assert.match(text(root),/已完成填写/,'must stay on final screen while request is pending');
+    if(result==='resolve'){
+      pending.resolve({});
+      await submit;
+      assert.match(text(root),/提交成功/);
+      assert.equal(ui.calls.filter(c=>c.url.endsWith('/responses')).length,1);
+    }else{
+      pending.reject(new Error('Submit unavailable'));
+      await submit;
+      assert.equal(disabled(back),false,'Back is available again after a failed submit');
+      assert.match(text(ui.nodes['#notice']),/Submit unavailable/);
+      await click(back);
+      assert.match(text(root),/Question/);
+    }
+  });
 }
 
 test('saving locks every editor control, preserves entered content and blocks concurrent requests', async () => {
@@ -208,6 +249,21 @@ function statistics() {
     {id:'choice', title:'Choice answers', type:'single', answered:21, options:[{id:'one', label:'One', count:21}]}
   ]};
 }
+function statisticsSummary() {
+  const data=statistics();
+  for(const q of data.questions){
+    q.values=[];
+    q.valuesOffset=0;
+    q.valuesLimit=0;
+    q.hasMore=q.answered>0;
+  }
+  return data;
+}
+function statisticsPage(questionID) {
+  const q=statistics().questions.find(q=>q.id===questionID);
+  assert.ok(q,'known paginated question');
+  return {totalResponses:21,questions:[q]};
+}
 function card(root, title) { return walk(root).find(node => node.tag === 'section' && node.children.some(child => text(child).includes(title)) && walk(node).some(child => child.tag === 'h2' && text(child) === title)); }
 
 test('statistics page raw text and numbers independently, keeping complete totals, choices and averages', async () => {
@@ -215,8 +271,8 @@ test('statistics page raw text and numbers independently, keeping complete total
   let waitForPage = true;
   const ui = await browser(request => {
     if (request.url.includes('/stats?')) {
-      if (waitForPage) return pending.promise;
       const params = new URLSearchParams(request.url.split('?')[1]);
+      if (waitForPage && params.get('offset') === '20') return pending.promise;
       const question = statistics().questions.find(q => q.id === params.get('questionId'));
       return {totalResponses:21, questions:[{...question, valuesOffset:Number(params.get('offset')),
         values:params.get('offset') === '0' ? question.values : [21], hasMore:params.get('offset') === '0'}]};
@@ -225,12 +281,15 @@ test('statistics page raw text and numbers independently, keeping complete total
   });
   const root = await ui.view('statsView');
   const textCard = card(root, 'Text answers'), numberCard = card(root, 'Number answers'), choiceCard = card(root, 'Choice answers');
+  assert.equal(findButton(textCard,'下一页'),undefined,'raw answers are not eagerly loaded');
+  await click(findButton(textCard,'查看填写内容'));
+  await click(findButton(numberCard,'查看填写内容'));
   assert.ok(disabled(findButton(textCard, '上一页')));
   const page = click(findButton(textCard, '下一页'));
   assert.ok(disabled(findButton(textCard, '下一页')));
   assert.ok(disabled(findButton(textCard, '上一页')));
   await click(findButton(textCard, '下一页'));
-  assert.equal(ui.calls.filter(call => call.url.includes('/stats?')).length, 1);
+  assert.equal(ui.calls.filter(call => call.url.includes('offset=20')).length, 1);
   const params = new URLSearchParams(ui.calls.at(-1).url.split('?')[1]);
   assert.equal(params.get('questionId'), 'text & special');
   assert.equal(params.get('offset'), '20');
@@ -264,6 +323,7 @@ test('statistics pagination refreshes returned summaries when new submissions ar
   const numberCard = card(root, 'Number answers'), choiceCard = card(root, 'Choice answers');
   const total = walk(root).find(node => node.className === 'large-number');
   const originalChoices = text(choiceCard);
+  await click(findButton(numberCard,'查看填写内容'));
   const paging = click(findButton(numberCard, '下一页'));
   assert.equal(text(total), '21', 'keep the previous total while the request is pending');
   assert.match(text(numberCard), /平均值：11/);
@@ -289,6 +349,7 @@ test('failed statistics pagination retains the current page and allows retry', a
   });
   const root = await ui.view('statsView');
   const question = card(root, 'Text answers');
+  await click(findButton(question,'查看填写内容'));
   await click(findButton(question, '下一页'));
   assert.match(text(question), /Answer 1/);
   assert.equal(text(walk(root).find(node => node.className === 'large-number')), '21');
@@ -306,6 +367,7 @@ test('switching question filters during pagination refreshes the visible card an
     return request.url.endsWith('/stats') ? statistics() : draft();
   });
   const root = await ui.view('statsView');
+  await click(findButton(card(root,'Text answers'),'查看填写内容'));
   const paging = click(findButton(card(root, 'Text answers'), '下一页'));
   const filter = walk(root).find(node => node.tag === 'select');
   change(filter, 'number', 'change');
@@ -328,6 +390,7 @@ for (const outcome of ['resolve', 'reject']) {
     });
     const root = await ui.view('statsView');
     ui.nodes['#app'].replaceChildren(root);
+    await click(findButton(card(root,'Text answers'),'查看填写内容'));
     const paging = click(findButton(card(root, 'Text answers'), '下一页'));
     vm.runInContext("go('/login')", ui.context);
     await flush();

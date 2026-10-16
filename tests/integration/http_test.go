@@ -107,6 +107,11 @@ func TestMongoHTTPIntegration(t *testing.T) {
 		client.must(t, "GET", "/api/me", nil, 200)
 	}
 	guest.must(t, "POST", "/api/register", map[string]string{"username": "alice", "password": password}, 409)
+	// Password minimum is eight characters, while the bcrypt upper bound
+	// remains 72 UTF-8 bytes.
+	unicodeClient := newClient()
+	unicodeClient.must(t, "POST", "/api/register", map[string]string{"username": "short_unicode", "password": "中文中文"}, 400)
+	unicodeClient.must(t, "POST", "/api/register", map[string]string{"username": "valid_unicode", "password": "中文中文中文中文中文中文中文中文"}, 201)
 	alice.must(t, "POST", "/api/logout", nil, 200)
 	alice.must(t, "GET", "/api/me", nil, 401)
 	alice.must(t, "POST", "/api/login", map[string]string{"username": "alice", "password": "wrong-password"}, 401)
@@ -271,6 +276,30 @@ func TestMongoHTTPIntegration(t *testing.T) {
 		t.Fatalf("single question stats: %#v", stats)
 	}
 	owner.must(t, "GET", private+"/stats?questionId=unknown", nil, 404)
+	var summary struct {
+		Total int `json:"totalResponses"`
+		Questions []struct {
+			ID string `json:"id"`
+			Answered int `json:"answered"`
+			Values []any `json:"values"`
+			ValuesLimit int `json:"valuesLimit"`
+			HasMore bool `json:"hasMore"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(owner.must(t, "GET", private+"/stats?summaryOnly=true", nil, 200), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 3 || len(summary.Questions) != 4 {
+		t.Fatalf("summary-only result: %#v", summary)
+	}
+	for _, q := range summary.Questions {
+		if q.Answered != expectedAnswered[q.ID] || len(q.Values) != 0 || q.ValuesLimit != 0 || !q.HasMore {
+			t.Fatalf("summary-only question: %#v", q)
+		}
+	}
+	for _, query := range []string{"summaryOnly=1", "summaryOnly=", "summaryOnly=true&summaryOnly=false"} {
+		owner.must(t, "GET", private+"/stats?"+query, nil, 400)
+	}
 	for _, query := range []string{
 		"offset=-1", "offset=bad", "offset=", "offset=99999999999999999999999999",
 		"offset=0&offset=1", "limit=0", "limit=51", "limit=-1", "limit=1.5", "limit=", "limit=1&limit=2",

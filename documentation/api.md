@@ -25,7 +25,7 @@
 | `POST /api/logout` | 无 | `200`，`{"ok":true}`；删除服务端会话并使 Cookie 过期 |
 | `GET /api/me` | 无 | `200`，当前用户；无会话为 `401` |
 
-密码不出现在任何响应或日志中。用户名冲突返回 `409`。
+注册密码至少为 8 个 Unicode 字符、最多为 72 个 UTF-8 字节（bcrypt 输入上限）；用户名冲突返回 `409`。密码不出现在正常的响应或日志中。
 
 ## 创建者问卷接口
 
@@ -39,7 +39,8 @@
 | `PUT /api/surveys/{id}` | 覆盖保存草稿 | `200`，revision 加一后的 Survey |
 | `POST /api/surveys/{id}/publish` | 发布合法且非空草稿 | `200`，已发布 Survey |
 | `POST /api/surveys/{id}/close` | 关闭已发布问卷 | `200`，已关闭 Survey |
-| `GET /api/surveys/{id}/stats` | 全问卷统计 | `200`，Stats |
+| `GET /api/surveys/{id}/stats` | 全问卷统计（兼容旧查询） | `200`，Stats，包含各题第一页面原始答案 |
+| `GET /api/surveys/{id}/stats?summaryOnly=true` | 仅取汇总，不读取原始答案 | `200`，全部题目的计数、均值和空的 `values` |
 | `GET /api/surveys/{id}/stats?questionId=q1` | 单题统计 | `200`，只含 `q1` 的 Stats；未知题目为 `404` |
 | `GET /api/surveys/{id}/stats?questionId=q1&offset=20&limit=20` | 原始答案下一页 | `200`，完整汇总和指定页原始答案 |
 
@@ -81,8 +82,10 @@
 }
 ```
 
-`answered` 是实际经过该题并保存了答案的回答数；被跳过题目和未作答的可选题不计入。数字题 `average` 为数值或 `null`，文本/选择题为 `null`。响应中不含身份或去重字段。
+`answered` 是实际经过该题且保存了非 null 答案的提交份数；被跳过题目和未提交答案的可选题不计入。明确提交的空字符串、空多选数组在通过校验后会计入该题回答数，但不会产生选项选择次数。数字题 `average` 为数值或 `null`，文本/选择题为 `null`。响应中不含身份或去重字段。
 
 `values` 为分页原始答案，默认 `offset=0&limit=20`，按 `submittedAt`、`_id` 升序排列。`offset` 必须为非负整数，`limit` 为 1–50 的整数；无效、空值或重复分页参数返回 `400`。`valuesOffset`、`valuesLimit` 表示当前页，`hasMore` 表示仍有下一页；超出末页返回空数组。`totalResponses`、`answered`、选项计数与 `average` 始终是完整汇总，不受分页影响。全问卷查询对每题应用相同分页参数，通常应通过 `questionId` 单独翻页。
 
-汇总来自同一聚合输入流，原始答案另行分页查询；并发提交可能在两次读取之间出现，因此整个响应不保证事务级快照。现有客户端若需要全部原始答案，须根据 `hasMore` 继续翻页；不能再假定一次 `values` 包含全部数据。
+新增 `summaryOnly=true` 仅执行汇总，不做逐题的原始答案查询；此时每题 `values=[]`、`valuesLimit=0`，`hasMore` 表示是否有可按需获取的原始答案。参数只接受单个 `true` 或 `false`，重复或其他值返回 `400`；默认仍为 `false`，以保留旧客户端的分页行为。网页先用汇总模式展示数据，用户点击“查看填写内容”后才请求某题的分页数据。
+
+汇总来自同一聚合输入流，原始答案另行分页查询；并发提交可能在两次读取之间出现，因此整个响应不保证事务级快照。客户端若需要全部原始答案，须根据 `hasMore` 继续翻页。整卷旧接口在题目很多时仍会执行逐题原始答案查询，建议使用汇总模式结合按题分页。

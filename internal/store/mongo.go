@@ -227,8 +227,8 @@ func (s *Store) InsertResponse(ctx context.Context, response *domain.Response, d
 // may appear between the summary and page reads. Participant identities are never
 // returned.
 func (s *Store) Stats(ctx context.Context, survey *domain.Survey, offset, limit int) (map[string]any, error) {
-	if offset < 0 || limit < 1 || limit > 50 {
-		return nil, errors.New("statistics offset must be nonnegative and limit between 1 and 50")
+	if offset < 0 || limit < 0 || limit > 50 {
+		return nil, errors.New("statistics offset must be nonnegative and limit between 0 and 50")
 	}
 	facets := bson.M{"total": mongo.Pipeline{{{Key: "$count", Value: "count"}}}}
 	for i, q := range survey.Questions {
@@ -291,9 +291,16 @@ func (s *Store) Stats(ctx context.Context, survey *domain.Survey, offset, limit 
 				average = *row.Average
 			}
 		}
-		values, hasMore, err := s.answerValues(ctx, survey.ID, q.ID, offset, limit)
-		if err != nil {
-			return nil, err
+		// limit=0 is an internal summary-only mode; the public API still
+		// requires a positive page size when raw values are requested.
+		values := make([]any, 0)
+		hasMore := row.Answered > 0
+		if limit > 0 {
+			var err error
+			values, hasMore, err = s.answerValues(ctx, survey.ID, q.ID, offset, limit)
+			if err != nil {
+				return nil, err
+			}
 		}
 		optionStats := make([]map[string]any, 0, len(q.Options))
 		for j, option := range q.Options {

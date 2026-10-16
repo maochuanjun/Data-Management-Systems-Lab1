@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -203,8 +204,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Username = strings.TrimSpace(c.Username)
-	if !usernamePattern.MatchString(c.Username) || len(c.Password) < 8 || len(c.Password) > 72 {
-		fail(w, 400, "用户名需为 3–32 位字母、数字或下划线；密码需为 8–72 字节")
+	if !usernamePattern.MatchString(c.Username) || utf8.RuneCountInString(c.Password) < 8 || len(c.Password) > 72 {
+		fail(w, 400, "用户名需为 3–32 位字母、数字或下划线；密码至少 8 个字符且不超过 72 字节")
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(c.Password), bcrypt.DefaultCost)
@@ -540,6 +541,14 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			*param.target = value
 		}
 	}
+	summaryOnly := false
+	if values, present := r.URL.Query()["summaryOnly"]; present {
+		if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+			fail(w, 400, "summaryOnly 必须为 true 或 false，且不能重复")
+			return
+		}
+		summaryOnly = values[0] == "true"
+	}
 	questionID := r.URL.Query().Get("questionId")
 	if questionID != "" {
 		found := false
@@ -554,6 +563,9 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, "题目不存在")
 			return
 		}
+	}
+	if summaryOnly {
+		limit = 0
 	}
 	result, err := s.repo.Stats(r.Context(), survey, offset, limit)
 	if err != nil {
