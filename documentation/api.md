@@ -36,7 +36,11 @@
 | `GET /api/surveys` | 我的问卷列表 | `200`，Survey 数组，按创建时间倒序 |
 | `POST /api/surveys` | 创建空草稿 | `201`，新 Survey |
 | `GET /api/surveys/{id}` | 获取自己的问卷 | `200`，完整 Survey |
-| `PUT /api/surveys/{id}` | 覆盖保存草稿 | `200`，revision 加一后的 Survey |
+| `PUT /api/surveys/{id}` | 覆盖保存未归档草稿 | `200`，revision 加一后的 Survey |
+| `DELETE /api/surveys/{id}` | 永久删除草稿（不适用于已发布问卷） | `200`，`{"ok":true}`；发布过的问卷返回 `409` |
+| `POST /api/surveys/{id}/archive` | 归档问卷；已发布问卷同时关闭 | `200`，`archived=true` 的 Survey |
+| `POST /api/surveys/{id}/restore` | 恢复归档，不自动重新开启 | `200`，`archived=false` 的 Survey |
+| `POST /api/surveys/{id}/reopen` | 重新开启已关闭且未归档的问卷 | `200`，状态变为 `published` |
 | `POST /api/surveys/{id}/publish` | 发布合法且非空草稿 | `200`，已发布 Survey |
 | `POST /api/surveys/{id}/close` | 关闭已发布问卷 | `200`，已关闭 Survey |
 | `GET /api/surveys/{id}/stats` | 全问卷统计（兼容旧查询） | `200`，Stats，包含各题第一页面原始答案 |
@@ -44,7 +48,11 @@
 | `GET /api/surveys/{id}/stats?questionId=q1` | 单题统计 | `200`，只含 `q1` 的 Stats；未知题目为 `404` |
 | `GET /api/surveys/{id}/stats?questionId=q1&offset=20&limit=20` | 原始答案下一页 | `200`，完整汇总和指定页原始答案 |
 
-`PUT` 请求保存草稿的完整可编辑内容，特别是 `revision`；遗漏的可编辑字段会使用其零值。服务器保留原有 `id`、`ownerId`、`createdAt`，且拒绝修改已发布问卷。草稿示例：
+`PUT` 请求保存草稿的完整可编辑内容，特别是 `revision`；遗漏的可编辑字段会使用其零值。服务器保留原有 `id`、`ownerId`、`createdAt`、`archived`，且拒绝修改已发布或已归档问卷。`archived` 是可选的布尔字段，历史问卷缺失时按 `false` 读取。归档和恢复不会删除答卷；归档正在收集的问卷会将状态原子调整为 `closed`。重新开启会保留原题目、答卷和防重复策略。
+
+`reopen` 以 JSON 对象请求：`{}` 表示保持原截止时间；`{"deadline":null}` 清除截止时间；`{"deadline":"2026-11-01T12:00:00Z"}` 设置未来截止时间。已过期的原时间不能直接复用，必须替换或清除。只有 `status=closed` 且 `archived=false` 可以重新开启。所有者权限、`revision` 乐观锁由服务端执行。
+
+草稿示例：
 
 ```json
 {
@@ -58,7 +66,7 @@
 
 ## 填写接口
 
-路径中使用 `public` 表示不要求 owner，而非不要求登录。任何填写者仍需登录。草稿读取为 `404`；`next` 和 `responses` 仅接受 `published` 且未到期的问卷，关闭或过期时返回 `409`。
+路径中使用 `public` 表示不要求 owner，而非不要求登录。任何填写者仍需登录。草稿或已归档问卷读取为 `404`；`next` 和 `responses` 仅接受未归档、`published` 且未到期的问卷，关闭或过期时返回 `409`。
 
 | 方法与路径 | 请求体 | 成功响应 |
 | --- | --- | --- |
