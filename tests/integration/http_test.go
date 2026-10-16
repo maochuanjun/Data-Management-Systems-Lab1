@@ -598,6 +598,7 @@ func TestSurveyDeleteArchiveRestoreAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.must(t, "POST", private+"/reopen", map[string]any{}, 400)
+	owner.must(t, "POST", private+"/reopen", map[string]any{"deadline": "invalid"}, 400)
 	future := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
 	reopened = integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/reopen",
 		map[string]any{"deadline": future}, 200))
