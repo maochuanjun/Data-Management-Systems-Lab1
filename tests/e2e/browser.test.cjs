@@ -150,6 +150,9 @@ test('real browser: creation, validation, branching, anonymity, paging and closu
     const textCard = page.locator('section.card').filter({has:page.getByRole('heading', {name:'特殊标识文本',exact:true})});
     assert.equal(await textCard.getByRole('button', {name:'查看填写内容'}).count(), 1);
     await textCard.getByRole('button', {name:'查看填写内容'}).click();
+    // The click starts an asynchronous fetch; wait for the complete first page
+    // instead of asserting before the response has rendered.
+    await textCard.locator('ol li').nth(19).waitFor();
     assert.equal(await textCard.locator('ol li').count(), 20);
     await textCard.getByRole('button', {name:'下一页'}).click();
     await textCard.getByText('第21条', {exact:true}).waitFor();
