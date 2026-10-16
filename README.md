@@ -1,6 +1,6 @@
 # 基于 MongoDB 的在线问卷系统
 
-《当代数据管理系统》第一次大作业（第一阶段）。项目使用 Go、MongoDB 和原生 HTML/CSS/JavaScript，实现问卷创建、填写、条件跳转和统计。重点是数据库设计与后端业务逻辑；界面保持简洁。
+《当代数据管理系统》第一次大作业（第一阶段）。项目使用 Go、MongoDB 和原生 HTML/CSS/JavaScript，实现问卷创建、填写、条件跳转和统计。
 
 ## 已实现功能
 
@@ -22,7 +22,7 @@ cp .env.example .env
 make run
 ~~~
 
-浏览器访问 http://127.0.0.1:8080。MongoDB 连接配置在项目根目录 `.env` 中，默认本地示例端口为 27018。`make run` 会加载 `.env`；直接执行 `go run ./cmd/server` 不会自动读取该文件。
+浏览器访问 <http://127.0.0.1:8080。MongoDB> 连接配置在项目根目录 `.env` 中，默认本地示例端口为 27018。`make run` 会加载 `.env`；直接执行 `go run ./cmd/server` 不会自动读取该文件。
 
 ## 演示流程
 
