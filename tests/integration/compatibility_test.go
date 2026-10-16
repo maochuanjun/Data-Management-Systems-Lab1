@@ -58,7 +58,7 @@ func TestVersionOneDocumentsRemainUsable(t *testing.T) {
 	}
 	for _, id := range []string{"legacy-published", "legacy-draft"} {
 		survey := integrationDecode[domain.Survey](t, owner.must(t, "GET", "/api/surveys/"+id, nil, 200))
-		if survey.SchemaVersion != 1 || survey.OwnerID != "legacy-owner" || len(survey.Questions) != 4 || !survey.CreatedAt.Equal(time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		if survey.SchemaVersion != 1 || survey.Archived || survey.OwnerID != "legacy-owner" || len(survey.Questions) != 4 || !survey.CreatedAt.Equal(time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)) {
 			t.Fatalf("legacy survey did not retain its schema: %#v", survey)
 		}
 	}

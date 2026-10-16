@@ -101,7 +101,7 @@ func collectionSchemas() map[string]bson.M {
 		}},
 		"surveys": {"bsonType": "object", "required": bson.A{"_id", "ownerId", "schemaVersion", "title", "status", "questions", "revision", "createdAt", "allowAnonymous", "allowRepeat"}, "properties": bson.M{
 			"_id": str, "ownerId": str, "schemaVersion": version, "title": str, "description": str, "createdAt": date,
-			"status": bson.M{"enum": bson.A{"draft", "published", "closed"}}, "allowAnonymous": boolean, "allowRepeat": boolean,
+			"status": bson.M{"enum": bson.A{"draft", "published", "closed"}}, "allowAnonymous": boolean, "allowRepeat": boolean, "archived": boolean,
 			"deadline": bson.M{"bsonType": bson.A{"date", "null"}}, "revision": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 0},
 			"questions": bson.M{"bsonType": bson.A{"array", "null"}, "items": question},
 		}},
@@ -183,7 +183,7 @@ func (s *Store) CreateSurvey(ctx context.Context, survey *domain.Survey) error {
 }
 func (s *Store) UpdateDraft(ctx context.Context, survey *domain.Survey, expectedRevision int) error {
 	result, err := s.db.Collection("surveys").UpdateOne(ctx,
-		bson.M{"_id": survey.ID, "ownerId": survey.OwnerID, "status": "draft", "revision": expectedRevision},
+		bson.M{"_id": survey.ID, "ownerId": survey.OwnerID, "status": "draft", "archived": bson.M{"$ne": true}, "revision": expectedRevision},
 		bson.M{"$set": bson.M{"title": survey.Title, "description": survey.Description, "questions": survey.Questions, "allowAnonymous": survey.AllowAnonymous, "allowRepeat": survey.AllowRepeat, "deadline": survey.Deadline, "schemaVersion": survey.SchemaVersion}, "$inc": bson.M{"revision": 1}})
 	if err != nil {
 		return translate(err)
@@ -196,7 +196,7 @@ func (s *Store) UpdateDraft(ctx context.Context, survey *domain.Survey, expected
 }
 func (s *Store) Transition(ctx context.Context, id, owner, from, to string, revision int) error {
 	result, err := s.db.Collection("surveys").UpdateOne(ctx,
-		bson.M{"_id": id, "ownerId": owner, "status": from, "revision": revision},
+		bson.M{"_id": id, "ownerId": owner, "status": from, "archived": bson.M{"$ne": true}, "revision": revision},
 		bson.M{"$set": bson.M{"status": to}, "$inc": bson.M{"revision": 1}})
 	if err != nil {
 		return translate(err)
@@ -206,6 +206,68 @@ func (s *Store) Transition(ctx context.Context, id, owner, from, to string, revi
 	}
 	return nil
 }
+// Archive changes dashboard visibility without deleting historical responses.
+// Archiving a published survey also closes it in the same atomic update.
+func (s *Store) SetArchiveState(ctx context.Context, survey *domain.Survey, archived bool) error {
+	filter := bson.M{"_id": survey.ID, "ownerId": survey.OwnerID, "revision": survey.Revision, "status": survey.Status}
+	update := bson.M{"archived": archived}
+	if archived {
+		filter["archived"] = bson.M{"$ne": true} // old v1 surveys omit this field
+		if survey.Status == "published" {
+			update["status"] = "closed"
+		}
+	} else {
+		filter["archived"] = true
+	}
+	result, err := s.db.Collection("surveys").UpdateOne(ctx, filter, bson.M{"$set": update, "$inc": bson.M{"revision": 1}})
+	if err != nil {
+		return translate(err)
+	}
+	if result.MatchedCount == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// DeleteDraft permanently deletes only drafts; published content and their
+// responses can be archived but must not be erased by this endpoint.
+func (s *Store) DeleteDraft(ctx context.Context, survey *domain.Survey) error {
+	count, err := s.db.Collection("responses").CountDocuments(ctx, bson.M{"surveyId": survey.ID})
+	if err != nil {
+		return translate(err)
+	}
+	if count != 0 {
+		return ErrConflict
+	}
+	result, err := s.db.Collection("surveys").DeleteOne(ctx, bson.M{
+		"_id": survey.ID, "ownerId": survey.OwnerID,
+		"status": "draft", "revision": survey.Revision,
+	})
+	if err != nil {
+		return translate(err)
+	}
+	if result.DeletedCount == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// Reopen preserves all existing questions, options and response documents.
+// A closed survey can be reopened with the original or a new valid deadline.
+func (s *Store) Reopen(ctx context.Context, survey *domain.Survey, deadline *time.Time) error {
+	result, err := s.db.Collection("surveys").UpdateOne(ctx,
+		bson.M{"_id": survey.ID, "ownerId": survey.OwnerID, "status": "closed",
+			"archived": bson.M{"$ne": true}, "revision": survey.Revision},
+		bson.M{"$set": bson.M{"status": "published", "deadline": deadline}, "$inc": bson.M{"revision": 1}})
+	if err != nil {
+		return translate(err)
+	}
+	if result.MatchedCount == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 func (s *Store) InsertResponse(ctx context.Context, response *domain.Response, dedupeKey string) error {
 	data, err := bson.Marshal(response)
 	if err != nil {

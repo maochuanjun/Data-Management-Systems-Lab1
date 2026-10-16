@@ -38,6 +38,9 @@ type Repository interface {
 	CreateSurvey(context.Context, *domain.Survey) error
 	UpdateDraft(context.Context, *domain.Survey, int) error
 	Transition(context.Context, string, string, string, string, int) error
+	SetArchiveState(context.Context, *domain.Survey, bool) error
+	DeleteDraft(context.Context, *domain.Survey) error
+	Reopen(context.Context, *domain.Survey, *time.Time) error
 	InsertResponse(context.Context, *domain.Response, string) error
 	Stats(context.Context, *domain.Survey, int, int) (map[string]any, error)
 }
@@ -62,6 +65,10 @@ func New(repo Repository, secure bool) http.Handler {
 	m.HandleFunc("POST /api/surveys", s.create)
 	m.HandleFunc("GET /api/surveys/{id}", s.get)
 	m.HandleFunc("PUT /api/surveys/{id}", s.update)
+	m.HandleFunc("DELETE /api/surveys/{id}", s.deleteDraft)
+	m.HandleFunc("POST /api/surveys/{id}/archive", s.archive)
+	m.HandleFunc("POST /api/surveys/{id}/restore", s.restore)
+	m.HandleFunc("POST /api/surveys/{id}/reopen", s.reopen)
 	m.HandleFunc("POST /api/surveys/{id}/publish", s.publish)
 	m.HandleFunc("POST /api/surveys/{id}/close", s.closeSurvey)
 	m.HandleFunc("GET /api/surveys/{id}/stats", s.stats)
@@ -304,6 +311,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	survey.ID = newID()
 	survey.OwnerID = u.ID
 	survey.Status = "draft"
+	survey.Archived = false
 	survey.Revision = 1
 	survey.SchemaVersion = 1
 	survey.CreatedAt = time.Now().UTC()
@@ -330,8 +338,8 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	if old == nil {
 		return
 	}
-	if old.Status != "draft" {
-		fail(w, 409, "已发布问卷不能修改，请创建新问卷")
+	if old.Status != "draft" || old.Archived {
+		fail(w, 409, "只有未归档的草稿可以修改")
 		return
 	}
 	var survey domain.Survey
@@ -343,6 +351,7 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	survey.OwnerID = old.OwnerID
 	survey.CreatedAt = old.CreatedAt
 	survey.Status = old.Status
+	survey.Archived = old.Archived
 	survey.SchemaVersion = old.SchemaVersion
 	if survey.Questions == nil {
 		survey.Questions = []domain.Question{}
@@ -362,8 +371,8 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	if survey == nil {
 		return
 	}
-	if survey.Status != "draft" {
-		fail(w, 409, "只有草稿可以发布")
+	if survey.Status != "draft" || survey.Archived {
+		fail(w, 409, "只有未归档的草稿可以发布")
 		return
 	}
 	if len(survey.Questions) == 0 {
@@ -399,6 +408,100 @@ func (s *Server) closeSurvey(w http.ResponseWriter, r *http.Request) {
 	survey.Revision++
 	write(w, 200, survey)
 }
+// deleteDraft only removes unpublished drafts. Keeping published submissions
+// intact is important for statistics and the second-stage compatibility tests.
+func (s *Server) deleteDraft(w http.ResponseWriter, r *http.Request) {
+	survey := s.owned(w, r)
+	if survey == nil {
+		return
+	}
+	if survey.Status != "draft" {
+		fail(w, 409, "只能永久删除草稿；已发布问卷请关闭或归档")
+		return
+	}
+	if err := s.repo.DeleteDraft(r.Context(), survey); err != nil {
+		s.dbError(w, err)
+		return
+	}
+	write(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
+	survey := s.owned(w, r)
+	if survey == nil {
+		return
+	}
+	if survey.Archived {
+		fail(w, 409, "问卷已经归档")
+		return
+	}
+	if err := s.repo.SetArchiveState(r.Context(), survey, true); err != nil {
+		s.dbError(w, err)
+		return
+	}
+	survey.Archived = true
+	if survey.Status == "published" {
+		survey.Status = "closed"
+	}
+	survey.Revision++
+	write(w, 200, survey)
+}
+
+func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	survey := s.owned(w, r)
+	if survey == nil {
+		return
+	}
+	if !survey.Archived {
+		fail(w, 409, "问卷未归档")
+		return
+	}
+	if err := s.repo.SetArchiveState(r.Context(), survey, false); err != nil {
+		s.dbError(w, err)
+		return
+	}
+	survey.Archived = false
+	survey.Revision++
+	write(w, 200, survey)
+}
+
+func (s *Server) reopen(w http.ResponseWriter, r *http.Request) {
+	survey := s.owned(w, r)
+	if survey == nil {
+		return
+	}
+	if survey.Status != "closed" || survey.Archived {
+		fail(w, 409, "只有未归档的已关闭问卷可以重新开启")
+		return
+	}
+	var body struct {
+		Deadline json.RawMessage `json:"deadline"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	deadline := survey.Deadline
+	// Missing field preserves the previous deadline; explicit null clears it.
+	if len(body.Deadline) != 0 {
+		if err := json.Unmarshal(body.Deadline, &deadline); err != nil {
+			fail(w, 400, "截止时间格式无效")
+			return
+		}
+	}
+	if deadline != nil && !deadline.After(time.Now()) {
+		fail(w, 400, "截止时间已过，请设置新的未来时间或取消截止时间")
+		return
+	}
+	if err := s.repo.Reopen(r.Context(), survey, deadline); err != nil {
+		s.dbError(w, err)
+		return
+	}
+	survey.Status = "published"
+	survey.Deadline = deadline
+	survey.Revision++
+	write(w, 200, survey)
+}
+
 func (s *Server) publicSurvey(w http.ResponseWriter, r *http.Request) *domain.Survey {
 	if s.auth(w, r) == nil {
 		return nil
@@ -408,8 +511,8 @@ func (s *Server) publicSurvey(w http.ResponseWriter, r *http.Request) *domain.Su
 		s.dbError(w, err)
 		return nil
 	}
-	if survey.Status == "draft" {
-		fail(w, 404, "问卷尚未发布")
+	if survey.Status == "draft" || survey.Archived {
+		fail(w, 404, "问卷尚未发布或已归档")
 		return nil
 	}
 	return survey
@@ -430,7 +533,7 @@ func (s *Server) public(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func open(w http.ResponseWriter, survey *domain.Survey) bool {
-	if survey.Status != "published" || (survey.Deadline != nil && !survey.Deadline.After(time.Now())) {
+	if survey.Archived || survey.Status != "published" || (survey.Deadline != nil && !survey.Deadline.After(time.Now())) {
 		fail(w, 409, "问卷已关闭或超过截止时间")
 		return false
 	}
