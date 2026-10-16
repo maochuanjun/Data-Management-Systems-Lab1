@@ -31,7 +31,11 @@
 | POST | `/api/surveys/{id}/reopen` | 重新开启已关闭、未归档的问卷 |
 | GET | `/api/surveys/{id}/stats` | 查看问卷统计 |
 
-创建或保存问卷时，主要可编辑字段有 `title`、`description`、`allowAnonymous`、`allowRepeat`、`deadline` 和 `questions`。保存草稿的示例：
+创建或保存问卷时，主要可编辑字段有 `title`、`description`、`allowAnonymous`、`allowRepeat`、`deadline` 和 `questions`。
+
+**三类题型的数据格式：**`type="single"` 为单选，`type="multiple"` 为多选，`type="fill"` 为填空。填空题必须同时设置 `fillType="text"`（文本）或 `fillType="number"`（数字）；文本填空使用 `minLength/maxLength`，数字填空使用 `min/max/integer`。旧问卷的 `type="text"/"number"` 为兼容保留，不是新建题目的独立类型。
+
+保存草稿的示例：
 
 ~~~json
 {
@@ -53,6 +57,16 @@
       ],
       "validation": {"integer": false},
       "rules": [{"operator": "eq", "value": "no", "target": "END"}]
+    },
+    {
+      "id": "q2",
+      "title": "你的年龄",
+      "type": "fill",
+      "fillType": "number",
+      "required": true,
+      "options": [],
+      "validation": {"min": 0, "max": 120, "integer": true},
+      "rules": []
     }
   ]
 }
@@ -99,4 +113,4 @@
 }
 ~~~
 
-`totalResponses`、`answered` 为提交记录数/有实际答案的提交份数，不是独立人数。数字题计算 `average`。`offset` 为非负整数，`limit` 为 1–50；原始答案按 `submittedAt + _id` 排序，`hasMore` 指示是否存在下一页。统计数据不返回填写者身份。
+`totalResponses`、`answered` 为提交记录数/有实际答案的提交份数，不是独立人数。统计结果也会为新的填空题返回 `type="fill"` 和 `fillType`；仅数字填空计算 `average`。`offset` 为非负整数，`limit` 为 1–50；原始答案按 `submittedAt + _id` 排序，`hasMore` 指示是否存在下一页。统计数据不返回填写者身份。

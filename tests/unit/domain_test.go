@@ -23,8 +23,8 @@ func choiceQuestion(kind string) domain.Question {
 func testSurvey() *domain.Survey {
 	return &domain.Survey{Title: "测试问卷", Questions: []domain.Question{
 		choiceQuestion("single"),
-		{ID: "q2", Title: "描述", Type: "text", Required: true},
-		{ID: "q3", Title: "年龄", Type: "number", Required: true},
+		{ID: "q2", Title: "描述", Type: "fill", FillType: "text", Required: true},
+		{ID: "q3", Title: "年龄", Type: "fill", FillType: "number", Required: true},
 	}}
 }
 
@@ -45,6 +45,11 @@ func TestValidateSurvey(t *testing.T) {
 		{"blank question", func(s *domain.Survey) { s.Questions[0].Title = "" }, false},
 		{"long question", func(s *domain.Survey) { s.Questions[0].Title = strings.Repeat("文", 501) }, false},
 		{"invalid type", func(s *domain.Survey) { s.Questions[0].Type = "date" }, false},
+		{"fill missing subtype", func(s *domain.Survey) { s.Questions[1].FillType = "" }, false},
+		{"fill invalid subtype", func(s *domain.Survey) { s.Questions[1].FillType = "phone" }, false},
+		{"choice cannot set fill subtype", func(s *domain.Survey) { s.Questions[0].FillType = "text" }, false},
+		{"legacy text still accepted", func(s *domain.Survey) { s.Questions[1].Type = "text"; s.Questions[1].FillType = "" }, true},
+		{"legacy number still accepted", func(s *domain.Survey) { s.Questions[2].Type = "number"; s.Questions[2].FillType = "" }, true},
 		{"too few options", func(s *domain.Survey) { s.Questions[0].Options = s.Questions[0].Options[:1] }, false},
 		{"duplicate option", func(s *domain.Survey) { s.Questions[0].Options[1].ID = "a" }, false},
 		{"blank label", func(s *domain.Survey) { s.Questions[0].Options[1].Label = " " }, false},
@@ -139,6 +144,10 @@ func TestValidateAnswer(t *testing.T) {
 		{"multiple minimum", multiple, []string{}, nil, false},
 		{"multiple maximum", multiple, []string{"a", "b", "c"}, nil, false},
 		{"unicode text", text, "中文🙂", "中文🙂", true},
+		{"fill text subtype", domain.Question{Type:"fill", FillType:"text", Required:true, Validation:text.Validation}, "中文🙂", "中文🙂", true},
+		{"fill text rejects number", domain.Question{Type:"fill", FillType:"text"}, 123.0, nil, false},
+		{"fill number subtype", domain.Question{Type:"fill", FillType:"number", Required:true, Validation:number.Validation}, 18.0, 18.0, true},
+		{"fill number rejects text", domain.Question{Type:"fill", FillType:"number"}, "18", nil, false},
 		{"text too short", text, "中", nil, false},
 		{"text too long", text, "中文🙂文", nil, false},
 		{"text whitespace", text, "   ", nil, false},

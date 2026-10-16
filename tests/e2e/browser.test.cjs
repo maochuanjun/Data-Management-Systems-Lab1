@@ -44,7 +44,7 @@ test(
     let surveyID;
 
     await t.test(
-      "register and design four question types using the actual editor",
+      "register and design three types including both fill subtypes using the actual editor",
       async () => {
         await page.goto(baseURL);
         await register(page, "e2e_owner");
@@ -52,8 +52,12 @@ test(
         await page.waitForURL("**/edit/*");
         surveyID = new URL(page.url()).pathname.split("/").pop();
         await page.getByLabel("问卷标题", {exact: true}).fill("端到端体验调查");
-        for (const type of ["single", "multiple", "text", "number"]) {
-          await page.locator("section.card.row select").selectOption(type);
+        const typeSelector = page.locator("section.card.row select");
+        assert.deepEqual(await typeSelector.locator("option").allTextContents(), [
+          "单选题", "多选题", "填空题",
+        ]);
+        for (const type of ["single", "multiple", "fill", "fill"]) {
+          await typeSelector.selectOption(type);
           await page.getByRole("button", {name: "＋ 添加题目"}).click();
         }
         const cards = page.locator("fieldset.question");
@@ -73,6 +77,7 @@ test(
         await cards.nth(1).getByLabel("至少选择", {exact: true}).fill("2");
         await cards.nth(1).getByLabel("至多选择", {exact: true}).fill("2");
         await cards.nth(2).getByLabel("题目", {exact: true}).fill("你的建议");
+        await cards.nth(3).getByLabel("填空内容", {exact: true}).selectOption("number");
         await cards.nth(3).getByLabel("题目", {exact: true}).fill("你的年龄");
         await cards.nth(3).getByText("填写限制", {exact: true}).click();
         await cards.nth(3).getByLabel("最小数值", {exact: true}).fill("0");
@@ -188,10 +193,11 @@ test(
               {
                 id: "__proto__",
                 title: "特殊标识文本",
-                type: "text",
+                type: "fill",
+                fillType: "text",
                 required: true,
               },
-              {id: "n", title: "评分", type: "number", required: true},
+              {id: "n", title: "评分", type: "fill", fillType: "number", required: true},
             ],
           },
           201,

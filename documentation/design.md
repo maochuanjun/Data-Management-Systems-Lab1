@@ -27,7 +27,7 @@ MongoDB
 | `surveys` | `_id`、`ownerId`、`title`、`status`、`questions`、`deadline`、`allowAnonymous`、`allowRepeat`、`revision`、`schemaVersion` | 问卷元数据、内嵌题目、选项和跳转规则 |
 | `responses` | `_id`、`surveyId`、`anonymous`、`answers`、`path`、`submittedAt`、`schemaVersion` | 每次提交一份独立答卷 |
 
-`surveys` 的 `questions` 数组内含题目类型、`required`、`options`、`validation` 和 `rules`。题目和选项使用稳定 ID，避免更改显示文字后影响规则引用。`archived` 用于归档；缺少此字段的旧问卷视为未归档。
+`surveys` 的 `questions` 数组内含题目类型、`required`、`options`、`validation` 和 `rules`。**业务上只有单选、多选、填空三类题型**：前两类分别用 `type=single/multiple`，填空统一用 `type=fill`，再以 `fillType=text/number` 区分文本、数字。文本长度和数字范围等校验由 `validation` 保存。题目和选项使用稳定 ID，避免更改显示文字后影响规则引用。`archived` 用于归档；缺少此字段的旧问卷视为未归档。
 
 一个简化的问卷片段如下：
 
@@ -60,7 +60,15 @@ MongoDB
 }
 ~~~
 
-省略了问卷说明、创建时间、截止时间等字段。这是用于解释结构的示例，不是完整的数据库插入脚本。
+填空题示例：
+
+~~~json
+{"id":"q2","title":"年龄","type":"fill","fillType":"number","required":true,"options":[],"validation":{"min":0,"max":120,"integer":true},"rules":[]}
+~~~
+
+如果填写内容是文字，则使用 `type=fill`、`fillType=text`，并通过 `minLength/maxLength` 约束字符数。旧数据曾直接使用 `type=text` 或 `type=number`；为保证第一阶段历史文档和答卷可继续使用，当前数据库校验器和业务层仍接受这两种旧表示，但新编辑器只提供三种主类型。
+
+上述示例省略了问卷说明、创建时间、截止时间等字段，用于解释结构，不是完整的数据库插入脚本。
 
 每次提交单独存放在 `responses`，其中 `answers` 是以题目 ID 为键的答案对象，`path` 记录实际经过的题目 ID。例如选“否”并提前结束时，`answers={"q1":"no"}`、`path=["q1"]`。
 
@@ -91,7 +99,7 @@ MongoDB
 | --- | --- |
 | 单选 | `eq`：选中的选项 ID 相等 |
 | 多选 | `contains`、`contains_all`：包含一个或全部选项 ID |
-| 数字 | `eq`、`gt`、`gte`、`lt`、`lte` |
+| 填空—数字 | `eq`、`gt`、`gte`、`lt`、`lte` |
 
 规则按数组顺序判断，第一条命中则跳到指定题目或 `END`；否则进入下一题。目标必须是后续题目或 `END`，第一阶段不支持循环。
 
