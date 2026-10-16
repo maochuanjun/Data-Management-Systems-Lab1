@@ -34,7 +34,13 @@ function button(label, handler, className = '') {
     try { await handler(); } catch (error) { show(error.message); } finally { target.disabled = false; }
   }},label);
 }
-function field(label, input, help) { return el('label',{class:'field'},el('span',{},label),input,help ? el('p',{class:'help'},help) : null); }
+function field(label, control, help) {
+  // An ancestor <label> can include the <option> text in a select's accessible
+  // name. Use a stable, explicit name so assistive technology and tests can
+  // identify the field without depending on the current choices.
+  if (control.tagName === 'SELECT') control.setAttribute('aria-label',label);
+  return el('label',{class:'field'},el('span',{},label),control,help ? el('p',{class:'help'},help) : null);
+}
 function checkbox(label, checked, callback) { return el('label',{class:'check'},el('input',{type:'checkbox',checked,onchange:event => callback(event.target.checked)}),label); }
 function input(value, callback, type = 'text', attrs = {}) { return el('input',{type,value:value ?? '',oninput:event => callback(event.target.value),...attrs}); }
 function select(options, value, callback) {
