@@ -1,97 +1,130 @@
-# 系统与数据设计
+# 系统与 MongoDB 设计
 
+本文说明第一阶段已经实现的模型和主要取舍；完整项目目标及测试结果见 [项目完成报告](../项目完成报告.md)。
 
-## 结构
+## 1. 系统结构
 
 ```text
-浏览器（静态 HTML/CSS/原生 JS）
-          │ JSON / HTTP，Cookie 会话
-          ▼
-internal/web        路由、认证、JSON 编解码、所有权检查
-          ▼
-internal/domain     问卷/答案校验、规则匹配、路径推导
-          ▼
-internal/store      MongoDB v2 实现、索引、聚合
-          ▼
-MongoDB             users / surveys / responses / sessions
+浏览器（HTML / CSS / 原生 JavaScript）
+             |
+       JSON API / Cookie
+             |
+ internal/web       HTTP 路由、认证、权限控制
+             |
+ internal/domain    题目校验、跳转规则、提交路径
+             |
+ internal/store     MongoDB 读写、索引、校验器、统计
+             |
+ MongoDB            users / sessions / surveys / responses
 ```
 
-`domain` 不依赖 HTTP 或 MongoDB。`web` 包定义 `Repository` 接口，处理器依赖该接口而不直接依赖 MongoDB，便于 HTTP 测试使用替身；生产启动时注入 `store.Store` 的 MongoDB 实现。`web` 只把经过认证与解码的数据交给领域层和存储层，不能相信浏览器给出的跳转路径、用户 ID 或统计结果。
+后端使用 Go 标准库 `net/http`。HTTP 层通过 `Repository` 接口调用存储层；领域层不依赖具体 HTTP 框架和 MongoDB 驱动，便于单独测试。前端页面通过 `go:embed` 由同一服务提供。
 
-## MongoDB 集合
+## 2. 集合及访问方式
 
-| 集合 | 责任 | 主要字段与索引 |
+| 集合 | 保存内容 | 主要索引及原因 |
 | --- | --- | --- |
-| `users` | 账户 | `_id`、`username`、`passwordHash`、`createdAt`；`username` 唯一索引 |
-| `surveys` | 问卷及其嵌入题目 | `_id`、`ownerId`、`schemaVersion`、`revision`、状态与 `questions`；`ownerId,createdAt` 索引 |
-| `responses` | 每次提交 | `_id`、`surveyId`、`schemaVersion`、可选 `userId`、`anonymous`、`dedupeKey`、`answers`、`path`、`submittedAt`；`surveyId,submittedAt` 索引；`surveyId,dedupeKey` partial unique 索引 |
-| `sessions` | 服务端会话 | `_id` 为 token 的 SHA-256 哈希，`userId`、`expiresAt`；`expiresAt` TTL 索引 |
+| `users` | 用户 ID、用户名、bcrypt 密码哈希、注册时间 | `username` 唯一索引，防止重复注册 |
+| `sessions` | token 哈希、用户 ID、过期时间 | `expiresAt` TTL 索引；读取时也检查过期时间 |
+| `surveys` | 问卷基本信息、状态、版本以及内嵌题目、选项和规则 | `(ownerId, createdAt)`，用于创建者列表 |
+| `responses` | 每份回答的问卷 ID、作答路径、答案、提交时间、匿名标志 | `(surveyId, submittedAt, _id)`，用于统计和稳定分页；`(surveyId, dedupeKey)` 部分唯一索引，用于禁止重复提交 |
 
-问卷和题目/选项/规则一同读取、共同发布，故嵌入 `surveys.questions`；一次完整回答也天然作为一个原子单元，故单独存为一个 `responses` 文档。账户、会话和可无限增长的回答没有嵌入到问卷或用户中，避免文档无限增长和无关访问。此方案利用 MongoDB 对嵌入文档、动态答案字段和单文档原子写入的适配性，而不将关系模型机械拆成大量“表”。
+四个集合均设置了 MongoDB JSON Schema 校验器，要求主要字段存在且类型正确；问卷状态、题型限制为指定枚举。JSON Schema 只处理基础形状，题目间引用、选项是否存在和跳转是否合法仍由领域层检查。
 
-### Survey 形状（摘要）
+### 问卷示例（简化）
 
 ```json
 {
-  "_id": "sv_...", "schemaVersion": 1, "revision": 3,
-  "ownerId": "usr_...", "title": "产品反馈", "description": "...",
-  "status": "draft", "allowAnonymous": true, "allowRepeat": false,
-  "deadline": "2026-10-20T12:00:00Z", "createdAt": "...",
-  "questions": [{
-    "id": "q1", "title": "年级", "type": "single", "required": true,
-    "options": [{"id":"o1","label":"大一"}, {"id":"o2","label":"大二"}],
-    "validation": {"integer": false},
-    "rules": [{"operator":"eq","value":"o1","target":"q3"}]
-  }]
+  "_id": "survey_001",
+  "schemaVersion": 1,
+  "revision": 2,
+  "ownerId": "user_001",
+  "title": "课程反馈",
+  "status": "published",
+  "allowAnonymous": true,
+  "allowRepeat": false,
+  "questions": [
+    {
+      "id": "q1",
+      "title": "是否愿意继续填写？",
+      "type": "single",
+      "required": true,
+      "options": [
+        {"id": "yes", "label": "愿意"},
+        {"id": "no", "label": "不愿意"}
+      ],
+      "validation": {"integer": false},
+      "rules": [{"operator": "eq", "value": "no", "target": "END"}]
+    }
+  ]
 }
 ```
 
-### Response 形状（摘要）
+### 回答示例（简化）
 
 ```json
 {
-  "_id": "rsp_...", "schemaVersion": 1, "surveyId": "sv_...",
+  "_id": "response_001",
+  "schemaVersion": 1,
+  "surveyId": "survey_001",
   "anonymous": true,
-  "dedupeKey": "sha256(surveyID:userID)",
-  "answers": {"q1":"o1", "q3": 18}, "path": ["q1", "q3"],
-  "submittedAt": "..."
+  "answers": {"q1": "no"},
+  "path": ["q1"],
+  "submittedAt": "2026-10-15T08:00:00Z"
 }
 ```
 
-匿名时省略 `userId`；非匿名回答包含 `userId`。`dedupeKey` 只在 `allowRepeat=false` 时写入，且仅用于唯一性约束。它是确定性的假名标识：拥有用户记录和数据库访问权的一方可以枚举用户 ID 并重算哈希以关联回答，因而它不提供管理员级别的不可关联性。partial unique 索引只约束含此字段的文档，从数据库层消除“先查询后插入”带来的竞争窗口。
+示例省略了部分字段，仅用于说明结构；实际 ID 由服务器生成。若问卷不允许重复，还会保存内部 `dedupeKey`。匿名答卷不保存 `userId`；非匿名答卷保存其 `userId`。
 
-## 校验、跳转和状态
+## 3. 为什么采用这样的 MongoDB 模型
 
-1. 保存草稿与发布前执行 `ValidateSurvey`：标题、稳定 ID、题型约束、选项、数值范围以及只能向前跳转的规则均须合法。
-2. 浏览器的“下一题”接口只用于交互预览；提交时 `ValidateSubmission` 从第一题重走规则，产生服务端 `path` 和归一化 `answers`。
-3. 对经过路径的每题执行类型、必填和长度/数量/范围校验；有答案却不在路径中的题目一律拒绝。
-4. 发布要求合法且非空的问卷；发布后题目和配置不可修改。推进题目与提交均检查 `status==published` 和当前时间早于 deadline；公开元数据读取可返回关闭或到期问卷供界面展示提示。关闭只允许 `published → closed`。
-5. 草稿更新 MongoDB 过滤条件为 `_id + ownerId + status:draft + revision`，更新时 `$inc: {revision: 1}`；匹配数为零即 `409`。
+题目、选项和跳转规则随问卷一起编辑、发布和读取，因此嵌入同一 `surveys` 文档：一次读取即可还原完整问卷，发布状态与题目配置不会出现跨文档不同步。回答数量会持续增长，所以将每次提交独立保存在 `responses`，避免把所有回答累积到一份问卷文档中。
 
-## 认证与安全边界
+如果使用关系数据库，常见做法是拆分 `surveys`、`questions`、`options`、`rules`、`responses`、`answer_items` 等表，通过外键和 JOIN 重建问卷。此项目的问卷结构层次明确、答案形态随题型变化，MongoDB 的嵌入文档更贴近主要读写场景。但这种选择并不意味着 MongoDB 总是优于关系数据库：复杂跨问卷分析、强跨文档事务和深分页仍有各自成本。
 
-密码只保存 bcrypt 哈希。登录成功后生成随机 token；浏览器只获得 token 原文的 `HttpOnly` cookie，数据库仅保存其 SHA-256 哈希，`Secure` 由 `COOKIE_SECURE` 控制，`SameSite=Lax`。会话查询也比较 `expiresAt`，不依赖 TTL 删除任务的时效性。
+## 4. 关键业务规则
 
-所有提交和编辑都根据会话取得用户，不接受请求体中的 owner/user ID。题目 ID 限制为 `[a-zA-Z0-9_-]{1,64}`，避免其作为 `answers.<id>` 聚合路径时引入字段路径歧义。统计聚合不投影 `userId` 或 `dedupeKey`。
+### 创建、发布和关闭
 
-## 统计策略
+状态为 `draft → published → closed`。草稿允许编辑；发布时必须含有效题目并且截止时间未到。发布后题目、规则及配置冻结，只能关闭。保存草稿时按 `revision` 乐观锁更新，旧版本请求返回 `409`。
 
-对问卷先执行一次 `$match`，再用一个 `$facet` 把同一响应流分到总数和每道题的管道。每题仅汇总已回答人数、选项次数与数字平均值，不把全部原始答案聚合进单个 BSON 文档。汇总结果大小随题目/选项数量增长，不随回答数无限增长。
+### 可配置跳转
 
-原始答案通过独立查询分页读取，默认每题 20 条、最多 50 条，以 `submittedAt`、`_id` 升序保证时间相同的回答也有确定顺序。前端文本/数字统计支持翻页。单个 `$facet` 保证汇总项来自同一输入流；分页读取与汇总之间可能出现新提交，整个响应没有事务级快照保证。分页限制解决单文档容量故障，仍不等同于完成生产负载优化；大量题目或很深的 offset 仍需按负载进一步优化。
+跳转规则直接存放在题目的 `rules` 数组中。单选支持 `eq`；多选支持 `contains`、`contains_all`；数字支持 `eq/gt/gte/lt/lte`。从左到右依次匹配，第一条命中规则生效；未命中进入下一题。目标只能是后续题目或 `END`，当前版本不允许循环跳转。
 
-## 参考资料
+### 提交校验
 
-- [Go `net/http` Cookie API](https://pkg.go.dev/net/http)
-- [Go `crypto/rand` API](https://pkg.go.dev/crypto/rand)
-- [bcrypt API](https://pkg.go.dev/golang.org/x/crypto/bcrypt)
-- [MongoDB Go Driver v2](https://pkg.go.dev/go.mongodb.org/mongo-driver/v2/mongo)
-- [MongoDB Partial Indexes](https://www.mongodb.com/docs/manual/core/index-partial/)
-- [MongoDB JSON Schema Validation](https://www.mongodb.com/docs/manual/core/schema-validation/)
-- [MongoDB Go Driver Aggregation](https://www.mongodb.com/docs/drivers/go/current/aggregation/)
+保存草稿、发布、下一题操作、最终提交都由服务端做相应校验。最终提交时调用领域层重新计算真实作答路径，只校验路径经过的题目，拒绝伪造额外答案。必答与多选数量、文本长度、数字范围和整数等限制均由服务器检查，不能依靠前端控件作为安全边界。
 
-## 扩展顺序
+### 登录、匿名及重复提交
 
-新增题型先扩充领域模型与校验、补充测试，再接入编辑器和填写页面。修改已发布题目时应增加独立问卷版本及答卷版本引用，保留旧版本；不能直接修改已有答卷所引用的题目。数据迁移应按 `schemaVersion` 编写显式迁移并测试旧数据，当前版本尚未提供自动迁移工具。
+注册后密码只保存 bcrypt 哈希；会话 Cookie 设置 `HttpOnly` 和 `SameSite=Lax`，数据库保存随机 token 的 SHA-256 哈希。是否允许匿名和重复由问卷控制。
 
-版本 1 历史数据已由 `tests/fixtures/v1` 固定并通过真实 MongoDB 兼容回归；后续改动应继续执行。具体边界及迭代步骤见 [第二阶段扩展约定](evolution.md)。统计界面按提交份数显示；翻页同步当前题目的汇总和顶部提交总数，其他题目保持上一次查询结果。
+不允许重复时，`dedupeKey = SHA-256(surveyID + ":" + userID)`，写入 `responses` 的部分唯一索引确保并发情况下同一账号最多成功提交一次。该去重值为确定性假名标识，数据库管理员可以利用用户记录重算，故匿名只是不向业务统计界面暴露账号，而非不可追踪的强匿名。
+
+## 5. 统计实现与取舍
+
+`responses` 按 `surveyId` 过滤，再经 `$facet` 为各题计算回答份数、选项次数与数字平均值。单选/多选按稳定选项 ID 计数；数字通过 `$avg` 求均值。结果以**提交份数**为单位，允许重复提交时不代表独立人数。
+
+为避免一次聚合把所有原始答案塞进 16 MiB 的单个 BSON 文档，原始答案使用独立分页查询，默认每页 20 条，最多 50 条，按 `(submittedAt, _id)` 稳定排序：
+
+- `GET /api/surveys/{id}/stats`：兼容旧调用，返回汇总和每题的原始答案分页。
+- `GET /api/surveys/{id}/stats?summaryOnly=true`：只运行汇总聚合，不逐题查询原始答案；网页统计概览使用此模式。
+- `GET /api/surveys/{id}/stats?questionId=q1&offset=0&limit=20`：查看某题原始答案，按需加载并翻页。
+
+`summaryOnly=true` 时每题 `values=[]`、`valuesLimit=0`，`hasMore` 表示该题是否存在可取回的答案。汇总与原始分页不在同一事务快照中，并发提交可能使两次读取的结果略有差异。旧版整卷统计路径仍可能逐题查询原始答案，应在高负载部署时限制使用或继续优化。
+
+## 6. 第二阶段的增量修改基础
+
+问卷和答卷带 `schemaVersion`；题目与选项以稳定 ID 引用，避免重排时错配原有答案；固定的 `tests/fixtures/v1` 用于旧数据回归。第二阶段必须保留现有核心功能，通过新增字段、版本化读取或显式迁移处理需求变化。当前**尚未实现通用自动迁移程序**，仅有版本标识与兼容性测试。
+
+如果需要编辑已发布问卷，应优先设计发布版本和回答对应的版本号，而不是直接覆盖历史题目；已保存答卷不应被新配置重新解释。
+
+## 7. 当前限制
+
+- 关闭操作和已通过准入检查的并发提交不是一个严格原子事务；关闭后仍可能完成先前已获准的写入。
+- 默认服务只监听本机；通过网络分发链接需要部署在可访问的主机上。
+- 大量题目及历史统计接口仍有聚合和查询成本；深 `offset` 分页不适合无限增长的数据量。
+- 当前题型与规则按第一阶段范围实现，不支持循环跳转或题目版本历史。
+
+具体接口见 [API 文档](api.md)，验证情况见 [测试记录](testing.md)。

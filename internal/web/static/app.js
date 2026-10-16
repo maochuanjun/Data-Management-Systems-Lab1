@@ -49,7 +49,7 @@ function updateNav() {
   if (user) nav.append(el('span',{class:'username muted'},user.username),button('退出',async () => {await api('/api/logout','POST');user=null;render();}));
   else nav.append(link('登录 / 注册','/login?return='+encodeURIComponent(location.pathname)));
 }
-function hero(title, subtitle, action) { return el('section',{class:'hero'},el('div',{},el('div',{class:'eyebrow'},'SURVEY WORKSPACE'),el('h1',{},title),el('p',{class:'muted'},subtitle)),action); }
+function hero(title, subtitle, action) { return el('section',{class:'hero'},el('div',{},el('h1',{},title),el('p',{class:'muted'},subtitle)),action); }
 async function render() {
   const generation = ++routeGeneration; notice.hidden = true; updateNav(); app.replaceChildren(el('p',{class:'loading'},'正在加载…'));
   const path = location.pathname;
@@ -85,7 +85,7 @@ function authView() {
       go(destination.startsWith('/') && !destination.startsWith('//') ? destination : '/');
     } catch(error) {show(error.message);} finally {submit.disabled=false;}
   }},field('用户名',username,'3–32 位字母、数字或下划线'),field('密码',password,'至少 8 个字符'),submit,toggle);
-  return el('section',{class:'auth'},el('div',{class:'eyebrow'},'WELCOME TO SURVEY STUDIO'),title,el('p',{class:'muted'},'把问题整理好，让每一份回答都有价值。'),form);
+  return el('section',{class:'auth'},title,el('p',{class:'muted'},'登录后可以创建、填写问卷，以及查看自己创建问卷的统计结果。'),form);
 }
 async function dashboard() {
   const surveys=await api('/api/surveys');
@@ -169,16 +169,35 @@ async function fillView(id){
   if(survey.status!=='published'||(survey.deadline&&new Date(survey.deadline)<=new Date()))return el('section',{class:'card fill'},el('h1',{},survey.title),el('p',{},'问卷尚未开放或已结束，暂时无法填写。'));
   const answers=Object.create(null),path=[];let current=survey.questions[0]?.id || 'END',anonymous=false,submitting=false,navigating=false;
   function paint(){
-    root.replaceChildren(el('div',{class:'eyebrow'},'YOUR VOICE MATTERS'),el('h1',{class:'preview'},survey.title),el('p',{class:'muted preview'},survey.description));
+    root.replaceChildren(el('h1',{class:'preview'},survey.title),el('p',{class:'muted preview'},survey.description));
     if(survey.deadline)root.append(el('p',{class:'help'},'截止：'+new Date(survey.deadline).toLocaleString()));
     const question=survey.questions.find(q=>q.id===current);
     if(current==='END'){
       const card=el('section',{class:'card'},el('h2',{},'已完成填写'),el('p',{class:'muted'},`已经过 ${path.length} 道题，请确认后提交。`));
-      if(survey.allowAnonymous){card.append(checkbox('匿名提交（不展示我的身份）',anonymous,value=>anonymous=value));card.append(el('p',{class:'help'},'匿名提交不展示你的身份；系统仍按登录账号执行重复提交限制。'));}
-      card.append(el('div',{class:'actions'},path.length?button('上一步',previous):null,button('提交问卷',async()=>{
-        if(submitting)return;submitting=true;
-        try{await api('/api/public/surveys/'+id+'/responses','POST',{anonymous,answers});root.replaceChildren(el('section',{class:'card'},el('div',{class:'eyebrow'},'THANK YOU'),el('h1',{},'提交成功'),el('p',{},'感谢你的时间，你的回答已保存。'),link('返回首页','/')));}finally{submitting=false;}
-      },'primary')));root.append(card);return;
+      let anonymousInput=null;
+      if(survey.allowAnonymous){
+        const anonymousToggle=checkbox('匿名提交（不展示我的身份）',anonymous,value=>anonymous=value);
+        anonymousInput=anonymousToggle.children[0];
+        card.append(anonymousToggle);
+        card.append(el('p',{class:'help'},'匿名提交不展示你的身份；系统仍按登录账号执行重复提交限制。'));
+      }
+      const backButton=path.length?button('上一步',previous):null;
+      const submitButton=button('提交问卷',async()=>{
+        if(submitting)return;
+        submitting=true;
+        if(backButton)backButton.disabled=true;
+        if(anonymousInput)anonymousInput.disabled=true;
+        try{
+          await api('/api/public/surveys/'+id+'/responses','POST',{anonymous,answers});
+          root.replaceChildren(el('section',{class:'card'},el('h1',{},'提交成功'),el('p',{},'回答已保存。'),link('返回首页','/')));
+        }finally{
+          submitting=false;
+          if(backButton)backButton.disabled=false;
+          if(anonymousInput)anonymousInput.disabled=false;
+        }
+      },'primary');
+      card.append(el('div',{class:'actions'},backButton,submitButton));
+      root.append(card);return;
     }
     if(!question){root.append(el('p',{class:'error'},'问卷题目不存在。'));return;}
     const position=survey.questions.findIndex(q=>q.id===current)+1;
@@ -199,19 +218,19 @@ async function fillView(id){
     card.append(el('div',{class:'actions'},path.length?button('上一步',previous):null,!question.required?button('跳过此题',()=>next(null)):null,button('下一步',()=>next(answer),'primary')));root.append(card);
   }
   async function next(answer){
-    if(navigating)return;navigating=true;
+    if(navigating||submitting)return;navigating=true;
     try {
     const result=await api('/api/public/surveys/'+id+'/next','POST',{questionId:current,answer});
     if(result.answer!==null&&result.answer!==undefined)answers[current]=result.answer;else delete answers[current];
     path.push(current);current=result.nextQuestionId;paint();
     } finally {navigating=false;}
   }
-  function previous(){if(navigating)return;delete answers[current];current=path.pop();paint();}
+  function previous(){if(navigating||submitting)return;delete answers[current];current=path.pop();paint();}
   paint();return root;
 }
 async function statsView(id){
   const generation=routeGeneration,pending=new Set();
-  const [survey,stats]=await Promise.all([api('/api/surveys/'+id),api('/api/surveys/'+id+'/stats')]);
+  const [survey,stats]=await Promise.all([api('/api/surveys/'+id),api('/api/surveys/'+id+'/stats?summaryOnly=true')]);
   const total=el('div',{class:'large-number',text:stats.totalResponses});
   const root=el('div',{},hero('回答统计',survey.title,link('← 问卷详情','/edit/'+id)),el('section',{class:'card'},el('p',{class:'muted'},'有效提交总数'),total,el('p',{class:'help'},'按提交记录计数，允许重复提交时同一人可能有多份回答。跳过或未提交的答案不计数；选填题允许留空时，已提交的空文本和空选项仍计入本题回答数。'),el('p',{class:'help'},'翻页会更新当前题目和提交总数，其他题目保留上次查询结果；刷新页面可更新全部题目。')));
   const list=el('div'),cards=new Map();
@@ -219,16 +238,28 @@ async function statsView(id){
       card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 份回答`));
       if(['single','multiple'].includes(question.type))for(const option of question.options||[]){const percent=question.answered?Math.round(option.count/question.answered*100):0;card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{class:'muted'},`${option.count} 次选择 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));}
       else{
-        const offset=question.valuesOffset||0,limit=question.valuesLimit||20;
+        const offset=question.valuesOffset??0,limit=question.valuesLimit??20;
         if(question.type==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));
-        card.append(el('ol',{class:'response-values',start:offset+1},(question.values||[]).map(value=>el('li',{},String(value)))));
-        if(!question.values?.length)card.append(el('p',{class:'muted'},'暂无回答'));
-        const previous=button('上一页',()=>loadPage(Math.max(0,offset-limit))),next=button('下一页',()=>loadPage(offset+limit));
-        previous.disabled=pending.has(question.id)||offset===0;next.disabled=pending.has(question.id)||!question.hasMore;
-        card.append(el('div',{class:'actions'},previous,el('span',{class:'help'},`第 ${Math.floor(offset/limit)+1} 页`),next));
+        const controls=[];
+        if(limit===0){
+          if(question.answered){
+            card.append(el('p',{class:'help'},'填写内容按需加载。'));
+            const load=button('查看填写内容',()=>loadPage(0));
+            load.disabled=pending.has(question.id);
+            controls.push(load);card.append(load);
+          }else card.append(el('p',{class:'muted'},'暂无回答'));
+        }else{
+          card.append(el('ol',{class:'response-values',start:offset+1},(question.values||[]).map(value=>el('li',{},String(value)))));
+          if(!question.values?.length)card.append(el('p',{class:'muted'},'暂无回答'));
+          const previous=button('上一页',()=>loadPage(Math.max(0,offset-limit))),next=button('下一页',()=>loadPage(offset+limit));
+          previous.disabled=pending.has(question.id)||offset===0;next.disabled=pending.has(question.id)||!question.hasMore;
+          controls.push(previous,next);
+          card.append(el('div',{class:'actions'},previous,el('span',{class:'help'},`第 ${Math.floor(offset/limit)+1} 页`),next));
+        }
         async function loadPage(nextOffset){
           if(pending.has(question.id))return;
-          pending.add(question.id);previous.disabled=true;next.disabled=true;
+          pending.add(question.id);
+          controls.forEach(control=>{control.disabled=true;});
           try{
             const params=new URLSearchParams({questionId:question.id,offset:nextOffset,limit:20});
             const page=await api('/api/surveys/'+id+'/stats?'+params);

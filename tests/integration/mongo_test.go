@@ -26,7 +26,16 @@ func TestStatsLargeTextResponses(t *testing.T) {
 	if _, err := fixture.DB.Collection("responses").InsertMany(ctx, documents); err != nil {
 		t.Fatal(err)
 	}
-	stats, err := repo.Stats(ctx, survey, 0, 50)
+	stats, err := repo.Stats(ctx, survey, 0, 0)
+	if err != nil {
+		t.Fatalf("summary-only large stats must not load raw values: %v", err)
+	}
+	summary := stats["questions"].([]map[string]any)[0]
+	if summary["answered"] != int64(600) || summary["valuesLimit"] != 0 ||
+		len(summary["values"].([]any)) != 0 || summary["hasMore"] != true {
+		t.Fatalf("invalid summary-only response: %#v", summary)
+	}
+	stats, err = repo.Stats(ctx, survey, 0, 50)
 	if err != nil {
 		t.Fatalf("statistics must support 600 valid long-text responses: %v", err)
 	}
