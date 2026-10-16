@@ -17,6 +17,7 @@ type Survey struct {
 	Description    string     `json:"description" bson:"description"`
 	AllowAnonymous bool       `json:"allowAnonymous" bson:"allowAnonymous"`
 	AllowRepeat    bool       `json:"allowRepeat" bson:"allowRepeat"`
+	Archived       bool       `json:"archived" bson:"archived,omitempty"`
 	Deadline       *time.Time `json:"deadline" bson:"deadline"`
 	Status         string     `json:"status" bson:"status"`
 	Questions      []Question `json:"questions" bson:"questions"`
