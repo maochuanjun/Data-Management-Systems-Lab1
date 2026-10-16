@@ -10,6 +10,7 @@ const {test} = require('node:test');
 class Element {
   constructor(tag) {
     this.tag = tag;
+    this.tagName = tag.toUpperCase();
     this.children = [];
     this.listeners = {};
     this.value = '';
@@ -427,8 +428,10 @@ test('single-choice branching uses visible option labels while storing stable ID
   const root=await ui.view('editorView');
   await click(findButton(root,'＋ 增加规则'));
   const value=ruleEditorField(root,'条件值','select');
+  assert.equal(value['aria-label'],'条件值','Select must have an explicit accessible name');
   assert.equal(walk(value).some(node=>node.tag==='option'&&text(node)==='女'),true);
   change(value,'female_id','change');
+  assert.equal(ruleEditorField(root,'跳转到','select')['aria-label'],'跳转到');
   change(ruleEditorField(root,'跳转到','select'),'q3','change');
   await click(findButton(root,'保存草稿'));
   const saved=ui.calls.find(c=>c.method==='PUT').body;
