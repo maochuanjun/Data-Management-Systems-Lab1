@@ -69,8 +69,11 @@ test('real browser: creation, validation, branching, anonymity, paging and closu
     await cards.nth(0).getByText(/条件跳转/).click();
     await cards.nth(0).getByRole('button', {name:'＋ 增加规则'}).click();
     await cards.nth(0).getByText(/条件跳转/).click();
-    // The UI displays option labels; the stored rule still uses a stable ID.
-    await cards.nth(0).getByLabel('条件值', {exact:true}).selectOption({label:'直接结束'});
+    // Keep a precise accessible name even though the choices have text labels.
+    // The rule value still persists the stable option ID, not the display text.
+    const choiceCondition=cards.nth(0).getByLabel('条件值', {exact:true});
+    assert.equal(await choiceCondition.getAttribute('aria-label'),'条件值');
+    await choiceCondition.selectOption({label:'直接结束'});
     await page.getByRole('button', {name:'保存并发布'}).click();
     await heading(page, '问卷详情');
     assert.equal(await page.getByLabel('问卷分享链接').inputValue(), baseURL+'/survey/'+surveyID);
