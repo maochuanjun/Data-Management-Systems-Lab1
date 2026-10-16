@@ -89,11 +89,37 @@ function authView() {
 }
 async function dashboard() {
   const surveys=await api('/api/surveys');
-  const root=el('div',{},hero('我的问卷','设计问题、收集回答，查看每一题的结果。',button('＋ 新建问卷',async () => {
-    const survey=await api('/api/surveys','POST',{title:'未命名问卷',description:'',allowAnonymous:true,allowRepeat:false,deadline:null,questions:[]});go('/edit/'+survey.id);
+  let archivedView=false;
+  const root=el('div',{},hero('我的问卷','创建、发布问卷并查看填写结果。',button('＋ 新建问卷',async()=>{
+    const survey=await api('/api/surveys','POST',{title:'未命名问卷',description:'',allowAnonymous:true,allowRepeat:false,deadline:null,questions:[]});
+    go('/edit/'+survey.id);
   },'primary')));
-  if (!surveys.length) {root.append(el('div',{class:'empty'},el('h2',{},'从第一个问题开始'),el('p',{class:'muted'},'新建一份问卷，添加题目并发布，随后分享填写链接。')));return root;}
-  root.append(el('div',{class:'grid'},surveys.map(survey => el('article',{class:'card'},el('div',{class:'row between'},el('span',{class:'badge '+survey.status},statusNames[survey.status] || survey.status),el('span',{class:'help'},`${survey.questions?.length || 0} 道题`)),el('h2',{class:'preview'},survey.title),el('p',{class:'muted preview'},survey.description || '暂无说明'),el('p',{class:'help'},survey.deadline?'截止：'+new Date(survey.deadline).toLocaleString():'未设置截止时间'),el('div',{class:'actions'},link(survey.status==='draft'?'编辑问卷':'查看问卷','/edit/'+survey.id),survey.status!=='draft'?link('查看统计','/stats/'+survey.id):null)))));
+  const toggle=button('查看已归档问卷',()=>{
+    archivedView=!archivedView;
+    toggle.textContent=archivedView?'返回全部未归档问卷':'查看已归档问卷';
+    paintList();
+  });
+  const list=el('div');
+  root.append(el('div',{class:'actions'},toggle),list);
+  function paintList(){
+    const visible=surveys.filter(s=>!!s.archived===archivedView);
+    if(!visible.length){
+      list.replaceChildren(el('div',{class:'empty'},el('h2',{},archivedView?'没有已归档的问卷':'还没有问卷'),el('p',{class:'muted'},archivedView?'可以在问卷详情中归档或恢复问卷。':'点击“新建问卷”开始。')));
+      return;
+    }
+    list.replaceChildren(el('div',{class:'grid'},visible.map(survey=>
+      el('article',{class:'card'},
+        el('div',{class:'row between'},
+          el('span',{class:'badge '+survey.status},survey.archived?'已归档 · '+(statusNames[survey.status]||survey.status):(statusNames[survey.status]||survey.status)),
+          el('span',{class:'help'},`${survey.questions?.length||0} 道题`)),
+        el('h2',{class:'preview'},survey.title),
+        el('p',{class:'muted preview'},survey.description||'暂无说明'),
+        el('p',{class:'help'},survey.deadline?'截止：'+new Date(survey.deadline).toLocaleString():'未设置截止时间'),
+        el('div',{class:'actions'},
+          link(survey.status==='draft'&&!survey.archived?'编辑问卷':'查看问卷','/edit/'+survey.id),
+          survey.status!=='draft'?link('查看统计','/stats/'+survey.id):null)))));
+  }
+  paintList();
   return root;
 }
 function identifier(prefix) {return prefix+'_'+Math.random().toString(36).slice(2,10);}
@@ -101,6 +127,19 @@ async function editorView(id) {
   let survey=await api('/api/surveys/'+id);
   let busy=false;
   const root=el('fieldset',{style:'border:0;padding:0;margin:0;min-width:0'});
+
+  async function operation(path,method='POST',body){
+    if(busy)return;
+    busy=true;root.disabled=true;root.setAttribute('aria-busy','true');
+    try{
+      const result=await api('/api/surveys/'+id+path,method,body);
+      if(method==='DELETE'){go('/');return;}
+      survey=result;
+      paint();
+    }finally{
+      busy=false;root.disabled=false;root.setAttribute('aria-busy','false');
+    }
+  }
   async function save(publish=false){
     if(busy)return;
     busy=true;root.disabled=true;root.setAttribute('aria-busy','true');
@@ -113,54 +152,167 @@ async function editorView(id) {
     }
   }
   function paint() {
-    const locked=survey.status!=='draft';
-    root.replaceChildren(hero(locked?'问卷详情':'设计问卷',locked?'已发布问卷的题目与配置已锁定。':'先完善题目与规则，再保存并发布。',link('← 我的问卷','/')));
+    const locked=survey.status!=='draft'||!!survey.archived;
+    root.replaceChildren(hero(survey.archived?'已归档问卷':locked?'问卷详情':'设计问卷',
+      survey.archived?'恢复归档后可以继续管理问卷。':locked?'发布后的题目和规则不可修改。':'先设置题目与规则，再保存并发布。',
+      link('← 我的问卷','/')));
     const title=input(survey.title,value=>survey.title=value);
     const description=el('textarea',{value:survey.description,oninput:event=>survey.description=event.target.value});
     let localDeadline='';
-    if(survey.deadline){const date=new Date(survey.deadline);localDeadline=new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);}
+    if(survey.deadline){
+      const date=new Date(survey.deadline);
+      localDeadline=new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    }
     const deadline=input(localDeadline,value=>survey.deadline=value?new Date(value).toISOString():null,'datetime-local');
-    const settings=el('fieldset',{class:'card',disabled:locked},field('问卷标题',title),field('问卷说明',description),el('div',{class:'grid'},field('截止时间（本地时区）',deadline),el('div',{class:'stack'},checkbox('允许匿名填写',survey.allowAnonymous,value=>survey.allowAnonymous=value),checkbox('允许重复提交',survey.allowRepeat,value=>survey.allowRepeat=value))),el('p',{class:'help'},'填写者均须登录；匿名提交不展示身份。关闭重复提交后，同一账号只能提交一次（含匿名提交）。'));
-    root.append(settings);
-    if(locked){
+    root.append(el('fieldset',{class:'card',disabled:locked},
+      field('问卷标题',title),field('问卷说明',description),
+      el('div',{class:'grid'},
+        field('截止时间（本地时区）',deadline),
+        el('div',{class:'stack'},checkbox('允许匿名填写',survey.allowAnonymous,value=>survey.allowAnonymous=value),
+          checkbox('允许重复提交',survey.allowRepeat,value=>survey.allowRepeat=value))),
+      el('p',{class:'help'},'填写者均须登录；不允许重复时，同一账号（包含匿名填写）只能提交一次。')));
+    if(survey.status!=='draft'){
       const url=location.origin+'/survey/'+id;
-      root.append(el('section',{class:'card'},el('div',{class:'row between'},el('h2',{},'分享与管理'),el('span',{class:'badge '+survey.status},statusNames[survey.status])),el('div',{class:'share'},el('input',{value:url,readOnly:true,'aria-label':'问卷分享链接'}),button('复制链接',async()=>{if(navigator.clipboard)await navigator.clipboard.writeText(url);else throw new Error('请选中上方链接后复制。');show('链接已复制',true);})),el('div',{class:'actions'},link('打开填写页面','/survey/'+id),link('查看回答统计','/stats/'+id),survey.status==='published'?button('关闭问卷',async()=>{await api('/api/surveys/'+id+'/close','POST');survey=await api('/api/surveys/'+id);paint();},'danger'):null)));
+      root.append(el('section',{class:'card'},
+        el('div',{class:'row between'},el('h2',{},'分享与统计'),
+          el('span',{class:'badge '+survey.status},statusNames[survey.status])),
+        el('div',{class:'share'},el('input',{value:url,readOnly:true,'aria-label':'问卷分享链接'}),
+          button('复制链接',async()=>{
+            if(navigator.clipboard)await navigator.clipboard.writeText(url);
+            else throw new Error('请选中上方链接后复制。');
+            show('链接已复制',true);
+          })),
+        el('div',{class:'actions'},link('打开填写页面','/survey/'+id),link('查看回答统计','/stats/'+id))));
+    }
+    if(survey.archived){
+      root.append(el('section',{class:'card'},
+        el('h2',{},'归档管理'),
+        el('p',{class:'help'},'归档不删除题目或答卷。恢复后可继续管理；如原来已发布，归档时已经自动关闭。'),
+        button('恢复归档',()=>operation('/restore'))));
+    }else{
+      const actions=[];
+      if(survey.status==='draft'){
+        actions.push(button('删除草稿',async()=>{
+          if(typeof window.confirm==='function'&&!window.confirm('确定永久删除此草稿？该操作无法撤销。'))return;
+          await operation('','DELETE');
+        },'danger'));
+      }
+      if(survey.status==='published'){
+        actions.push(button('关闭问卷',()=>operation('/close'),'danger'));
+      }
+      if(survey.status==='closed'){
+        const initial=survey.deadline&&new Date(survey.deadline)>new Date()?localDeadline:'';
+        const nextDeadline=input(initial,()=>{},'datetime-local',{'aria-label':'重新开启后的截止时间'});
+        const reopen=el('div',{class:'stack'},
+          field('重新开启后的截止时间（可留空）',nextDeadline,
+            '留空表示取消截止时间；若使用原截止时间，它必须尚未到期。重新开启不会清除已有回答。'),
+          button('重新开启问卷',()=>{
+            const raw=nextDeadline.value;
+            const deadline=raw?new Date(raw).toISOString():null;
+            return operation('/reopen','POST',{deadline});
+          },'primary'));
+        root.append(el('section',{class:'card'},el('h2',{},'重新开启'),reopen));
+      }
+      actions.push(button('归档问卷',async()=>{
+        const warning=survey.status==='published'
+          ?'归档会同时关闭正在收集回答的问卷，已有回答将保留。确定归档？'
+          :'归档将从默认列表隐藏问卷，已有数据会保留。确定归档？';
+        if(typeof window.confirm==='function'&&!window.confirm(warning))return;
+        await operation('/archive');
+      }));
+      root.append(el('section',{class:'card'},el('h2',{},'问卷管理'),
+        el('p',{class:'help'},'仅草稿允许永久删除。已发布的问卷可关闭或归档，保留已有答卷。'),
+        el('div',{class:'actions'},actions)));
     }
     survey.questions.forEach((question,index)=>root.append(questionEditor(question,index,locked)));
     if(!locked){
       const addType=select(Object.entries(typeNames),'single',()=>{});
       root.append(el('section',{class:'card row'},addType,button('＋ 添加题目',()=>{
-        const type=addType.value;survey.questions.push({id:identifier('q'),title:'',type,required:true,options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[],validation:{integer:false},rules:[]});paint();
+        const type=addType.value;
+        survey.questions.push({id:identifier('q'),title:'',type,required:true,
+          options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[],
+          validation:{integer:false},rules:[]});
+        paint();
       })));
-      root.append(el('div',{class:'toolbar row between'},el('span',{class:'help'},`${survey.questions.length} 道题 · 修改后请保存`),el('div',{class:'actions'},button('保存草稿',()=>save()),button('保存并发布',()=>save(true),'primary'))));
+      root.append(el('div',{class:'toolbar row between'},
+        el('span',{class:'help'},`${survey.questions.length} 道题 · 修改后请保存`),
+        el('div',{class:'actions'},button('保存草稿',()=>save()),button('保存并发布',()=>save(true),'primary'))));
     }
   }
   function questionEditor(question,index,locked){
     question.validation ||= {};question.rules ||= [];question.options ||= [];
-    const card=el('fieldset',{class:'card question',disabled:locked},el('div',{class:'question-head'},el('h2',{},`${index+1}. ${typeNames[question.type]}`),!locked?button('删除题目',()=>{survey.questions.splice(index,1);paint();},'danger'):null),field('题目',input(question.title,value=>question.title=value)),checkbox('必填',question.required,value=>question.required=value));
+    const card=el('fieldset',{class:'card question',disabled:locked},
+      el('div',{class:'question-head'},el('h2',{},`${index+1}. ${typeNames[question.type]}`),
+        !locked?button('删除题目',()=>{survey.questions.splice(index,1);paint();},'danger'):null),
+      field('题目',input(question.title,value=>question.title=value)),
+      checkbox('必填',question.required,value=>question.required=value));
     if(['single','multiple'].includes(question.type)){
-      card.append(el('p',{class:'help'},'左侧是稳定的选项 ID，用于设置跳转条件；修改显示文字不会改变 ID。'));
-      question.options.forEach(option=>card.append(el('div',{class:'option-row'},el('code',{},option.id),input(option.label,value=>option.label=value,'text',{'aria-label':'选项文字'}),!locked?button('移除',()=>{question.options=question.options.filter(item=>item!==option);paint();},'danger'):null)));
+      question.options.forEach(option=>card.append(el('div',{class:'option-row'},
+        el('span',{class:'help'},'选项'),
+        input(option.label,value=>option.label=value,'text',{'aria-label':'选项文字'}),
+        !locked?button('移除',()=>{question.options=question.options.filter(item=>item!==option);paint();},'danger'):null)));
       if(!locked)card.append(button('＋ 增加选项',()=>{question.options.push({id:identifier('o'),label:'新选项'});paint();}));
     }
     const constraints=el('div',{class:'grid'});
-    const keys={multiple:[['minSelect','至少选择'],['maxSelect','至多选择']],text:[['minLength','最少字符数'],['maxLength','最多字符数']],number:[['min','最小数值'],['max','最大数值']]}[question.type] || [];
-    for(const [key,label] of keys)constraints.append(field(label,input(question.validation[key],value=>{if(value==='')delete question.validation[key];else question.validation[key]=Number(value);},'number',{step:question.type==='number'?'any':'1',...(question.type!=='number'?{min:'0'}:{})})));
-    if(question.type==='number')constraints.append(checkbox('只接受整数',question.validation.integer,value=>question.validation.integer=value));
-    if(keys.length)card.append(el('details',{},el('summary',{},'填写限制'),el('p',{class:'help'},'留空表示不限制；必填和填写限制会在服务器再次检查。'),constraints));
-    const rules=el('details',{},el('summary',{},`条件跳转（${question.rules.length} 条）`),el('p',{class:'help'},'按顺序匹配第一条成立的规则，只能跳到后续题目或结束。未匹配时进入下一题。多值条件填写选项 ID，以英文逗号分隔。'));
-    const operators={single:[['eq','等于选项']],multiple:[['contains','包含选项'],['contains_all','包含全部选项']],text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[question.type];
-    const targets=[...survey.questions.slice(index+1).map((item,offset)=>[item.id,`${index+offset+2}. ${item.title || '未命名题目'}`]),['END','结束问卷']];
+    const keys={multiple:[['minSelect','至少选择'],['maxSelect','至多选择']],
+      text:[['minLength','最少字符数'],['maxLength','最多字符数']],
+      number:[['min','最小数值'],['max','最大数值']]}[question.type]||[];
+    for(const [key,label] of keys)constraints.append(field(label,
+      input(question.validation[key],value=>{
+        if(value==='')delete question.validation[key];
+        else question.validation[key]=Number(value);
+      },'number',{step:question.type==='number'?'any':'1',...(question.type!=='number'?{min:'0'}:{})})));
+    if(question.type==='number')constraints.append(checkbox('只接受整数',question.validation.integer,
+      value=>question.validation.integer=value));
+    if(keys.length)card.append(el('details',{},el('summary',{},'填写限制'),
+      el('p',{class:'help'},'留空表示不限制；服务器将在填写时检查。'),constraints));
+
+    const operators={single:[['eq','等于选项']],multiple:[['contains','包含选项'],['contains_all','包含全部选项']],
+      text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[question.type];
+    const targets=[...survey.questions.slice(index+1).map((item,offset)=>
+      [item.id,`${index+offset+2}. ${item.title||'未命名题目'}${offset===0?'（默认下一题）':''}`]),['END','结束问卷']];
+    const rules=el('details',{},el('summary',{},`条件跳转（${question.rules.length} 条）`),
+      el('p',{class:'help'},'按顺序匹配第一条符合的规则。若没有命中规则，自动进入下一题。跳到紧接着的下一题与默认行为相同；规则保存并发布后才会生效。'));
     question.rules.forEach((rule,ruleIndex)=>{
-      const parse=value=>question.type==='number'?(value.trim()===''?null:Number(value)):question.type==='multiple'&&rule.operator!=='contains'?value.split(',').map(x=>x.trim()).filter(Boolean):value;
-      const valueInput=input(Array.isArray(rule.value)?rule.value.join(','):rule.value,value=>rule.value=parse(value));
-      const targetOptions=targets.some(([target])=>target===rule.target)?targets:[[rule.target,'目标已删除，请重新选择'],...targets];
-      rules.append(el('div',{class:'rule'},el('div',{class:'row'},field('如果答案',select(operators,rule.operator,value=>{rule.operator=value;rule.value=parse(valueInput.value);})),field('条件值',valueInput),field('跳转到',select(targetOptions,rule.target,value=>rule.target=value)),!locked?button('移除规则',()=>{question.rules.splice(ruleIndex,1);paint();},'danger'):null)));
+      const options=question.options.map(option=>[option.id,option.label||'(未命名选项)']);
+      let valueInput;
+      if(question.type==='single'||(question.type==='multiple'&&rule.operator==='contains')){
+        const valid=options.some(([id])=>id===rule.value);
+        const items=valid?options:[[String(rule.value),'失效选项，请重新选择'],...options];
+        valueInput=select(items,String(rule.value??''),value=>rule.value=value);
+      }else if(question.type==='multiple'&&rule.operator==='contains_all'){
+        valueInput=el('div',{class:'stack'},question.options.map(option=>
+          checkbox(option.label||'(未命名选项)',Array.isArray(rule.value)&&rule.value.includes(option.id),checked=>{
+            const selected=Array.isArray(rule.value)?[...rule.value]:[];
+            rule.value=checked?[...new Set([...selected,option.id])]:selected.filter(id=>id!==option.id);
+          })));
+      }else{
+        valueInput=input(rule.value,value=>rule.value=value.trim()===''?null:Number(value),'number',{step:'any'});
+      }
+      const targetOptions=targets.some(([target])=>target===rule.target)
+        ?targets:[[rule.target,'目标已删除，请重新选择'],...targets];
+      rules.append(el('div',{class:'rule'},el('div',{class:'row'},
+        field('如果答案',select(operators,rule.operator,value=>{
+          rule.operator=value;
+          if(question.type==='multiple'){
+            rule.value=value==='contains_all'?[question.options[0]?.id].filter(Boolean):question.options[0]?.id||'';
+          }
+          paint();
+        })),
+        field('条件值',valueInput),
+        field('跳转到',select(targetOptions,rule.target,value=>rule.target=value)),
+        !locked?button('移除规则',()=>{question.rules.splice(ruleIndex,1);paint();},'danger'):null)));
     });
-    if(!locked&&operators.length)rules.append(button('＋ 增加规则',()=>{question.rules.push({operator:operators[0][0],value:question.type==='number'?0:'',target:'END'});paint();}));
-    if(operators.length)card.append(rules);return card;
+    if(!locked&&operators.length)rules.append(button('＋ 增加规则',()=>{
+      const first=question.options[0]?.id||'';
+      question.rules.push({operator:operators[0][0],value:question.type==='number'?0:first,target:'END'});
+      paint();
+    }));
+    if(operators.length)card.append(rules);
+    return card;
   }
-  paint();return root;
+  paint();
+  return root;
 }
 async function fillView(id){
   if(!user)return el('section',{class:'card fill'},el('h1',{},'登录后填写问卷'),el('p',{},'所有填写者均须登录；允许匿名的问卷可在提交时选择隐藏身份。'),link('登录后继续','/login?return='+encodeURIComponent('/survey/'+id)));
