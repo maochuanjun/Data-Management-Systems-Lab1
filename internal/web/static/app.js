@@ -299,7 +299,9 @@ async function editorView(id) {
           }
           paint();
         })),
-        field('条件值',valueInput),
+        question.type==='multiple'&&rule.operator==='contains_all'
+          ?el('div',{class:'field'},el('span',{},'条件值'),valueInput)
+          :field('条件值',valueInput),
         field('跳转到',select(targetOptions,rule.target,value=>rule.target=value)),
         !locked?button('移除规则',()=>{question.rules.splice(ruleIndex,1);paint();},'danger'):null)));
     });
