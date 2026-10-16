@@ -137,9 +137,9 @@ func TestMongoHTTPIntegration(t *testing.T) {
 	// Reject impossible required constraints both on API writes and when
 	// publishing a draft previously stored by an older application version.
 	for _, q := range []domain.Question{
-		{ID: "q", Title: "必答文本", Type: "text", Required: true, Validation: domain.Validation{MaxLength: integrationInt(0)}},
+		{ID: "q", Title: "必答文本", Type: "fill", FillType: "text", Required: true, Validation: domain.Validation{MaxLength: integrationInt(0)}},
 		{ID: "q", Title: "必答多选", Type: "multiple", Required: true, Options: []domain.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}, Validation: domain.Validation{MaxSelect: integrationInt(0)}},
-		{ID: "q", Title: "必答整数", Type: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(.1), Max: integrationFloat(.9)}},
+		{ID: "q", Title: "必答整数", Type: "fill", FillType: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(.1), Max: integrationFloat(.9)}},
 	} {
 		invalid := draft
 		invalid.Questions = []domain.Question{q}
@@ -162,9 +162,9 @@ func TestMongoHTTPIntegration(t *testing.T) {
 			Options:    []domain.Option{{ID: "x", Label: "甲"}, {ID: "y", Label: "乙"}, {ID: "z", Label: "结束"}},
 			Validation: domain.Validation{MinSelect: integrationInt(1), MaxSelect: integrationInt(2)},
 			Rules:      []domain.Rule{{Operator: "contains_all", Value: []any{"x", "y"}, Target: "q4"}, {Operator: "contains", Value: "z", Target: "END"}}},
-		{ID: "q3", Title: "数字", Type: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(0), Max: integrationFloat(100)},
+		{ID: "q3", Title: "数字", Type: "fill", FillType: "number", Required: true, Validation: domain.Validation{Integer: true, Min: integrationFloat(0), Max: integrationFloat(100)},
 			Rules: []domain.Rule{{Operator: "gte", Value: 18.0, Target: "END"}}},
-		{ID: "q4", Title: "中文文本", Type: "text", Required: true, Validation: domain.Validation{MinLength: integrationInt(2), MaxLength: integrationInt(3)}},
+		{ID: "q4", Title: "中文文本", Type: "fill", FillType: "text", Required: true, Validation: domain.Validation{MinLength: integrationInt(2), MaxLength: integrationInt(3)}},
 	}
 	updated := integrationDecode[domain.Survey](t, owner.must(t, "PUT", private, draft, 200))
 	if updated.Revision != draft.Revision+1 {
@@ -183,6 +183,13 @@ func TestMongoHTTPIntegration(t *testing.T) {
 	publicBody := integrationDecode[map[string]any](t, alice.must(t, "GET", public, nil, 200))
 	if _, present := publicBody["ownerId"]; present {
 		t.Fatal("public survey exposes ownerId")
+	}
+	publicQuestions := publicBody["questions"].([]any)
+	for _, item := range []struct{index int; subtype string}{{2, "number"}, {3, "text"}} {
+		q := publicQuestions[item.index].(map[string]any)
+		if q["type"] != "fill" || q["fillType"] != item.subtype {
+			t.Fatalf("fill question not serialized with subtype: %#v", q)
+		}
 	}
 
 	for _, tc := range []struct {
@@ -528,8 +535,8 @@ func TestSurveyDeleteArchiveRestoreAndReopen(t *testing.T) {
 				Options: []domain.Option{{ID: "male", Label: "男"}, {ID: "female", Label: "女"}},
 				Rules: []domain.Rule{{Operator: "eq", Value: "male", Target: "details"},
 					{Operator: "eq", Value: "female", Target: "age"}}},
-			{ID: "details", Title: "后续必答题", Type: "text", Required: true},
-			{ID: "age", Title: "年龄", Type: "number", Required: true,
+			{ID: "details", Title: "后续必答题", Type: "fill", FillType: "text", Required: true},
+			{ID: "age", Title: "年龄", Type: "fill", FillType: "number", Required: true,
 				Validation: domain.Validation{Integer: true}},
 		}}, 201))
 	private = "/api/surveys/" + survey.ID

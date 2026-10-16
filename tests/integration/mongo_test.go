@@ -66,10 +66,10 @@ func TestStatsPaginationAndSummaries(t *testing.T) {
 	repo, ctx := fixture.Store, fixture.Context
 	choices := []domain.Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}, {ID: "c", Label: "C"}}
 	survey := &domain.Survey{ID: "pages", Questions: []domain.Question{
-		{ID: "text", Title: "Text", Type: "text"},
+		{ID: "text", Title: "Text", Type: "fill", FillType: "text"},
 		{ID: "single", Title: "Single", Type: "single", Options: choices},
 		{ID: "multiple", Title: "Multiple", Type: "multiple", Options: choices},
-		{ID: "number", Title: "Number", Type: "number"},
+		{ID: "number", Title: "Number", Type: "fill", FillType: "number"},
 	}}
 	answers := []map[string]any{
 		{"text": "first", "single": "a", "multiple": []string{"a", "b"}, "number": float64(1)},
@@ -111,6 +111,9 @@ func TestStatsPaginationAndSummaries(t *testing.T) {
 			if q["answered"] != wantAnswered[i] || q["id"] != survey.Questions[i].ID || q["title"] != survey.Questions[i].Title || q["type"] != survey.Questions[i].Type {
 				t.Fatalf("incorrect summary: %v", q)
 			}
+			if survey.Questions[i].Type == "fill" && q["fillType"] != survey.Questions[i].FillType {
+				t.Fatalf("fill subtype missing from statistics: %v", q)
+			}
 			if q["valuesOffset"] != offset || q["valuesLimit"] != 2 || q["hasMore"] != (int64(offset+2) < wantAnswered[i]) {
 				t.Fatalf("incorrect pagination: %v", q)
 			}
@@ -140,7 +143,7 @@ func TestStatsPaginationAndSummaries(t *testing.T) {
 func TestStatsEmptySurveys(t *testing.T) {
 	fixture := support.NewMongo(t)
 	repo, ctx := fixture.Store, fixture.Context
-	for _, questions := range [][]domain.Question{nil, {{ID: "q", Title: "Number", Type: "number"}}} {
+	for _, questions := range [][]domain.Question{nil, {{ID: "q", Title: "Number", Type: "fill", FillType: "number"}}} {
 		stats, err := repo.Stats(ctx, &domain.Survey{ID: "empty", Questions: questions}, 0, 20)
 		if err != nil {
 			t.Fatal(err)

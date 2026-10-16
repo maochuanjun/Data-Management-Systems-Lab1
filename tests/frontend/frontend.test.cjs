@@ -469,3 +469,66 @@ test('dashboard hides archived questionnaires until requested',async()=>{
   assert.match(text(root),/Archived survey/);
   assert.doesNotMatch(text(root),/Visible draft/);
 });
+
+test('editor offers three question types and saves text/number as fill subtypes',async()=>{
+  const ui=await browser(req=>req.method==='PUT'?{...req.body,revision:2}:{...draft(),questions:[]});
+  const root=await ui.view('editorView');
+  function addTypeSelect(){
+    return walk(root).find(n=>n.tag==='select'&&n.children.some(x=>x.tag==='option'&&x.value==='fill'));
+  }
+  let addType=addTypeSelect();
+  assert.deepEqual(addType.children.map(n=>n.value),['single','multiple','fill']);
+  change(addType,'fill','change');
+  await click(findButton(root,'＋ 添加题目'));
+  let cards=()=>walk(root).filter(n=>n.tag==='fieldset'&&n.className==='card question');
+  assert.match(text(cards()[0]),/填空题（文本）/);
+  change(ruleEditorField(cards()[0],'题目','input'),'意见');
+  addType=addTypeSelect();
+  change(addType,'fill','change');
+  await click(findButton(root,'＋ 添加题目'));
+  change(ruleEditorField(cards()[1],'填空内容','select'),'number','change');
+  change(ruleEditorField(cards()[1],'题目','input'),'年龄');
+  assert.match(text(cards()[1]),/填空题（数字）/);
+  assert.ok(walk(cards()[1]).some(n=>n.tag==='summary'&&text(n)==='填写限制'));
+  await click(findButton(root,'保存草稿'));
+  const questions=ui.calls.find(c=>c.method==='PUT').body.questions;
+  assert.equal(questions.length,2);
+  assert.deepEqual(questions.map(q=>[q.type,q.fillType]),[['fill','text'],['fill','number']]);
+  assert.equal(questions[0].title,'意见');
+  assert.equal(questions[1].title,'年龄');
+});
+
+test('editing legacy draft uses the new fill model without discarding its IDs',async()=>{
+  const old={...draft(),questions:[
+    {id:'old_text',title:'意见',type:'text',required:true,validation:{minLength:2},rules:[]},
+    {id:'old_number',title:'年龄',type:'number',required:true,validation:{integer:true,min:0},rules:[]}
+  ]};
+  const ui=await browser(req=>req.method==='PUT'?{...req.body,revision:2}:old);
+  const root=await ui.view('editorView');
+  await click(findButton(root,'保存草稿'));
+  const questions=ui.calls.find(c=>c.method==='PUT').body.questions;
+  assert.deepEqual(questions.map(q=>[q.id,q.type,q.fillType]),[
+    ['old_text','fill','text'],['old_number','fill','number']]);
+  assert.equal(questions[0].validation.minLength,2);
+  assert.equal(questions[1].validation.integer,true);
+});
+
+for(const fillType of ['text','number']){
+  test(`new ${fillType} fill subtype renders and submits the right answer`,async()=>{
+    const survey={...draft(),status:'published',questions:[
+      {id:'q',title:'填写内容',type:'fill',fillType,required:true,validation:{integer:fillType==='number'}}]};
+    const ui=await browser(req=>{
+      if(req.url.endsWith('/next'))return {answer:req.body.answer,nextQuestionId:'END'};
+      if(req.url.endsWith('/responses'))return {};
+      return survey;
+    });
+    const root=await ui.view('fillView');
+    const control=walk(root).find(n=>n.tag===(fillType==='text'?'textarea':'input'));
+    assert.ok(control);
+    change(control,fillType==='text'?'文字':'21');
+    await click(findButton(root,'下一步'));
+    await click(findButton(root,'提交问卷'));
+    const expected=fillType==='text'?'文字':21;
+    assert.deepEqual(ui.calls.find(c=>c.url.endsWith('/responses')).body.answers,{q:expected});
+  });
+}

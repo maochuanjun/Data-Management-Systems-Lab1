@@ -2,7 +2,21 @@
 const app = document.querySelector('#app');
 const nav = document.querySelector('#nav');
 const notice = document.querySelector('#notice');
-const typeNames = {single:'单选题',multiple:'多选题',text:'填空题',number:'数值题'};
+const typeNames = {single:'单选题',multiple:'多选题',fill:'填空题'};
+function questionType(question) {
+  return question.type==='text'||question.type==='number'?'fill':question.type;
+}
+function fillType(question) {
+  return question.type==='fill'?question.fillType:(question.type==='number'?'number':'text');
+}
+function answerType(question) {
+  return questionType(question)==='fill'?fillType(question):question.type;
+}
+function questionLabel(question) {
+  return questionType(question)==='fill'
+    ? '填空题（'+(fillType(question)==='number'?'数字':'文本')+'）'
+    : typeNames[question.type];
+}
 const statusNames = {draft:'草稿',published:'已发布',closed:'已关闭'};
 let user = null, noticeTimer, routeGeneration = 0;
 function el(tag, attrs = {}, ...children) {
@@ -235,7 +249,8 @@ async function editorView(id) {
       const addType=select(Object.entries(typeNames),'single',()=>{});
       root.append(el('section',{class:'card row'},addType,button('＋ 添加题目',()=>{
         const type=addType.value;
-        survey.questions.push({id:identifier('q'),title:'',type,required:true,
+        survey.questions.push({id:identifier('q'),title:'',type,
+          ...(type==='fill'?{fillType:'text'}:{}),required:true,
           options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[],
           validation:{integer:false},rules:[]});
         paint();
@@ -246,12 +261,27 @@ async function editorView(id) {
     }
   }
   function questionEditor(question,index,locked){
+    // Editing a legacy draft upgrades its representation without changing IDs.
+    // Published legacy questionnaires keep their original stored type.
+    if(!locked&&(question.type==='text'||question.type==='number')){
+      question.fillType=question.type;
+      question.type='fill';
+    }
     question.validation ||= {};question.rules ||= [];question.options ||= [];
     const card=el('fieldset',{class:'card question',disabled:locked},
-      el('div',{class:'question-head'},el('h2',{},`${index+1}. ${typeNames[question.type]}`),
+      el('div',{class:'question-head'},el('h2',{},`${index+1}. ${questionLabel(question)}`),
         !locked?button('删除题目',()=>{survey.questions.splice(index,1);paint();},'danger'):null),
       field('题目',input(question.title,value=>question.title=value)),
       checkbox('必填',question.required,value=>question.required=value));
+    if(questionType(question)==='fill'){
+      card.append(field('填空内容',select([['text','文本'],['number','数字']],fillType(question),value=>{
+        if(question.fillType===value)return;
+        question.type='fill';question.fillType=value;
+        question.validation={integer:false};
+        question.rules=[];
+        paint();
+      })));
+    }
     if(['single','multiple'].includes(question.type)){
       question.options.forEach(option=>card.append(el('div',{class:'option-row'},
         el('span',{class:'help'},'选项'),
@@ -262,19 +292,19 @@ async function editorView(id) {
     const constraints=el('div',{class:'grid'});
     const keys={multiple:[['minSelect','至少选择'],['maxSelect','至多选择']],
       text:[['minLength','最少字符数'],['maxLength','最多字符数']],
-      number:[['min','最小数值'],['max','最大数值']]}[question.type]||[];
+      number:[['min','最小数值'],['max','最大数值']]}[answerType(question)]||[];
     for(const [key,label] of keys)constraints.append(field(label,
       input(question.validation[key],value=>{
         if(value==='')delete question.validation[key];
         else question.validation[key]=Number(value);
-      },'number',{step:question.type==='number'?'any':'1',...(question.type!=='number'?{min:'0'}:{})})));
-    if(question.type==='number')constraints.append(checkbox('只接受整数',question.validation.integer,
+      },'number',{step:answerType(question)==='number'?'any':'1',...(answerType(question)!=='number'?{min:'0'}:{})})));
+    if(answerType(question)==='number')constraints.append(checkbox('只接受整数',question.validation.integer,
       value=>question.validation.integer=value));
     if(keys.length)card.append(el('details',{},el('summary',{},'填写限制'),
       el('p',{class:'help'},'留空表示不限制；服务器将在填写时检查。'),constraints));
 
     const operators={single:[['eq','等于选项']],multiple:[['contains','包含选项'],['contains_all','包含全部选项']],
-      text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[question.type];
+      text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[answerType(question)];
     const targets=[...survey.questions.slice(index+1).map((item,offset)=>
       [item.id,`${index+offset+2}. ${item.title||'未命名题目'}${offset===0?'（默认下一题）':''}`]),['END','结束问卷']];
     const rules=el('details',{},el('summary',{},`条件跳转（${question.rules.length} 条）`),
@@ -313,7 +343,7 @@ async function editorView(id) {
     });
     if(!locked&&operators.length)rules.append(button('＋ 增加规则',()=>{
       const first=question.options[0]?.id||'';
-      question.rules.push({operator:operators[0][0],value:question.type==='number'?0:first,target:'END'});
+      question.rules.push({operator:operators[0][0],value:answerType(question)==='number'?0:first,target:'END'});
       paint();
     }));
     if(operators.length)card.append(rules);
@@ -361,7 +391,7 @@ async function fillView(id){
     }
     if(!question){root.append(el('p',{class:'error'},'问卷题目不存在。'));return;}
     const position=survey.questions.findIndex(q=>q.id===current)+1;
-    root.append(el('p',{class:'help'},`第 ${position} / ${survey.questions.length} 题 · ${typeNames[question.type]}${question.required?' · 必填':' · 选填'}`),el('div',{class:'progress','aria-hidden':'true'},el('span',{style:`width:${position/survey.questions.length*100}%`})));
+    root.append(el('p',{class:'help'},`第 ${position} / ${survey.questions.length} 题 · ${questionLabel(question)}${question.required?' · 必填':' · 选填'}`),el('div',{class:'progress','aria-hidden':'true'},el('span',{style:`width:${position/survey.questions.length*100}%`})));
     const card=el('section',{class:'card'},el('h2',{class:'preview'},question.title));
     let answer=answers[current] ?? null;
     if(question.type==='single'){
@@ -369,7 +399,7 @@ async function fillView(id){
     }else if(question.type==='multiple'){
       answer=Array.isArray(answer)?[...answer]:[];
       for(const option of question.options)card.append(el('label',{class:'choice'},el('input',{type:'checkbox',value:option.id,checked:answer.includes(option.id),onchange:event=>{answer=event.target.checked?[...answer,option.id]:answer.filter(item=>item!==option.id);}}),option.label));
-    }else if(question.type==='text')card.append(el('textarea',{value:answer??'','aria-label':question.title,oninput:event=>{answer=event.target.value;}}));
+    }else if(answerType(question)==='text')card.append(el('textarea',{value:answer??'','aria-label':question.title,oninput:event=>{answer=event.target.value;}}));
     else card.append(input(answer,value=>{answer=value===''?null:Number(value);},'number',{step:question.validation?.integer?'1':'any','aria-label':question.title}));
     const validation=question.validation||{},hints=[];
     for(const [key,label] of [['minSelect','至少选择'],['maxSelect','至多选择'],['minLength','最少字符数'],['maxLength','最多字符数'],['min','最小值'],['max','最大值']])if(validation[key]!==undefined)hints.push(label+' '+validation[key]);
@@ -395,11 +425,11 @@ async function statsView(id){
   const root=el('div',{},hero('回答统计',survey.title,link('← 问卷详情','/edit/'+id)),el('section',{class:'card'},el('p',{class:'muted'},'有效提交总数'),total,el('p',{class:'help'},'按提交记录计数，允许重复提交时同一人可能有多份回答。跳过或未提交的答案不计数；选填题允许留空时，已提交的空文本和空选项仍计入本题回答数。'),el('p',{class:'help'},'翻页会更新当前题目和提交总数，其他题目保留上次查询结果；刷新页面可更新全部题目。')));
   const list=el('div'),cards=new Map();
   function paintQuestion(question,card){
-      card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},typeNames[question.type])),el('p',{class:'help'},`${question.answered} 份回答`));
+      card.replaceChildren(el('div',{class:'row between'},el('h2',{class:'preview'},question.title),el('span',{class:'badge'},questionLabel(question))),el('p',{class:'help'},`${question.answered} 份回答`));
       if(['single','multiple'].includes(question.type))for(const option of question.options||[]){const percent=question.answered?Math.round(option.count/question.answered*100):0;card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{class:'muted'},`${option.count} 次选择 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));}
       else{
         const offset=question.valuesOffset??0,limit=question.valuesLimit??20;
-        if(question.type==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));
+        if(answerType(question)==='number')card.append(el('p',{},'平均值：'+(question.average===null||question.average===undefined?'暂无数据':Number(question.average.toFixed(4)))));
         const controls=[];
         if(limit===0){
           if(question.answered){

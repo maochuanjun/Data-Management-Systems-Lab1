@@ -88,7 +88,8 @@ func collectionSchemas() map[string]bson.M {
 	rule := bson.M{"bsonType": "object", "required": bson.A{"operator", "value", "target"}, "properties": bson.M{"operator": str, "target": str}}
 	question := bson.M{"bsonType": "object", "required": bson.A{"id", "title", "type", "required", "validation"}, "properties": bson.M{
 		"id": bson.M{"bsonType": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}, "title": str,
-		"type": bson.M{"enum": bson.A{"single", "multiple", "text", "number"}}, "required": boolean,
+		// Legacy documents stored text/number as separate types; new ones use fill + fillType.
+		"type": bson.M{"enum": bson.A{"single", "multiple", "fill", "text", "number"}}, "fillType": bson.M{"enum": bson.A{"text", "number"}}, "required": boolean,
 		"options": bson.M{"bsonType": bson.A{"array", "null"}, "items": option},
 		"rules":   bson.M{"bsonType": bson.A{"array", "null"}, "items": rule}, "validation": bson.M{"bsonType": "object"},
 	}}
@@ -296,7 +297,7 @@ func (s *Store) Stats(ctx context.Context, survey *domain.Survey, offset, limit 
 	for i, q := range survey.Questions {
 		field := "answers." + q.ID
 		group := bson.M{"_id": nil, "answered": bson.M{"$sum": 1}}
-		if q.Type == "number" {
+		if q.Type == "number" || (q.Type == "fill" && q.FillType == "number") {
 			group["average"] = bson.M{"$avg": "$" + field}
 		}
 		optionCounts := make(bson.A, 0, len(q.Options))
@@ -372,11 +373,15 @@ func (s *Store) Stats(ctx context.Context, survey *domain.Survey, offset, limit 
 			}
 			optionStats = append(optionStats, map[string]any{"id": option.ID, "label": option.Label, "count": count})
 		}
-		questions = append(questions, map[string]any{
+		questionStats := map[string]any{
 			"id": q.ID, "title": q.Title, "type": q.Type, "answered": row.Answered,
 			"options": optionStats, "values": values, "average": average,
 			"valuesOffset": offset, "valuesLimit": limit, "hasMore": hasMore,
-		})
+		}
+		if q.Type == "fill" {
+			questionStats["fillType"] = q.FillType
+		}
+		questions = append(questions, questionStats)
 	}
 	return map[string]any{"totalResponses": total, "questions": questions}, nil
 }

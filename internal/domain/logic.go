@@ -14,6 +14,15 @@ const maxSafeInteger = 9007199254740991
 
 var validID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
+// answerType treats fill subtypes as their validation kind. The old text/number
+// question types remain readable for first-stage saved data.
+func answerType(q Question) string {
+	if q.Type == "fill" {
+		return q.FillType
+	}
+	return q.Type
+}
+
 // ValidateSurvey checks the schema, including forward-only conditional jumps.
 // An empty question list is allowed while a survey is being drafted.
 func ValidateSurvey(s *Survey) error {
@@ -59,7 +68,14 @@ func validateQuestion(q Question) error {
 	if strings.TrimSpace(q.Title) == "" || utf8.RuneCountInString(q.Title) > 500 {
 		return fmt.Errorf("标题不能为空且不能超过 500 个字符")
 	}
-	switch q.Type {
+	if q.Type == "fill" && q.FillType != "text" && q.FillType != "number" {
+		return fmt.Errorf("填空题必须设置文本或数字子类型")
+	}
+	if q.Type != "fill" && q.FillType != "" {
+		return fmt.Errorf("只有填空题可以设置填空子类型")
+	}
+	kind := answerType(q)
+	switch kind {
 	case "single", "multiple":
 		if len(q.Options) < 2 || len(q.Options) > 100 {
 			return fmt.Errorf("选择题需要 2 至 100 个选项")
@@ -82,10 +98,10 @@ func validateQuestion(q Question) error {
 	if q.Type != "multiple" && (v.MinSelect != nil || v.MaxSelect != nil) {
 		return fmt.Errorf("只有多选题可以限制选择数量")
 	}
-	if q.Type != "text" && (v.MinLength != nil || v.MaxLength != nil) {
+	if kind != "text" && (v.MinLength != nil || v.MaxLength != nil) {
 		return fmt.Errorf("只有文本题可以限制文本长度")
 	}
-	if q.Type != "number" && (v.Min != nil || v.Max != nil || v.Integer) {
+	if kind != "number" && (v.Min != nil || v.Max != nil || v.Integer) {
 		return fmt.Errorf("只有数字题可以设置数值限制")
 	}
 	if err := validateIntRange(v.MinSelect, v.MaxSelect, len(q.Options)); err != nil {
@@ -102,10 +118,10 @@ func validateQuestion(q Question) error {
 		if q.Type == "multiple" && v.MaxSelect != nil && *v.MaxSelect == 0 {
 			return fmt.Errorf("必答多选题必须允许至少选择一个选项")
 		}
-		if q.Type == "text" && v.MaxLength != nil && *v.MaxLength == 0 {
+		if kind == "text" && v.MaxLength != nil && *v.MaxLength == 0 {
 			return fmt.Errorf("必答文本题必须允许至少一个字符")
 		}
-		if q.Type == "number" {
+		if kind == "number" {
 			// Beyond this interval every representable float64 is an unsafe
 			// integer, which ValidateAnswer rejects even for decimal questions.
 			lower, upper := -float64(maxSafeInteger), float64(maxSafeInteger)
@@ -136,7 +152,7 @@ func validateIntRange(min, max *int, limit int) error {
 }
 
 func validateRule(q Question, r Rule) error {
-	switch q.Type {
+	switch answerType(q) {
 	case "single":
 		value, ok := r.Value.(string)
 		if r.Operator == "eq" && ok && hasOption(q, value) {
@@ -182,7 +198,7 @@ func ValidateAnswer(q Question, value any) (any, error) {
 		return nil, nil
 	}
 	v := q.Validation
-	switch q.Type {
+	switch answerType(q) {
 	case "single":
 		selected, ok := value.(string)
 		if !ok || !hasOption(q, selected) {
@@ -244,7 +260,7 @@ func NextQuestion(s *Survey, questionID string, answer any) string {
 		}
 		if answer != nil {
 			for _, rule := range q.Rules {
-				if matches(q.Type, rule, answer) {
+				if matches(q, rule, answer) {
 					return rule.Target
 				}
 			}
@@ -257,8 +273,8 @@ func NextQuestion(s *Survey, questionID string, answer any) string {
 	return End
 }
 
-func matches(questionType string, rule Rule, answer any) bool {
-	switch questionType {
+func matches(question Question, rule Rule, answer any) bool {
+	switch answerType(question) {
 	case "single":
 		actual, aok := answer.(string)
 		expected, eok := rule.Value.(string)
