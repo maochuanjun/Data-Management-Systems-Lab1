@@ -62,10 +62,26 @@ python3 scripts/with-local-mongo.py make verify
 - 当时记录的 `internal/domain`、`internal/store`、`internal/web` 跨包语句覆盖率为 85.6%，不是当前修改分支重新计算的覆盖率。
 - 这些执行记录可追溯到此前版本的测试日志与 Git 历史，不能当作本次改动后的自动验收结果。
 
-**2026-10-16 本轮整理：**
+**2026-10-16 本轮整理与本地复核：**
 
-- 已根据静态代码审查增补提交中禁止回退、统计汇总模式及 Unicode 密码的回归用例，并调整浏览器测试以适应“按需加载原始答案”。
-- 本轮修改是通过 GitHub 仓库接口完成；审查环境没有可访问的 MongoDB 和 Go 1.26 测试环境，**本轮新增测试尚未实际运行，结果待复核**。
-- 正式提交前请按第 2 节执行全部检查，并将真实命令、运行时间、通过/失败数、关键截图更新到本节和 [项目完成报告](../项目完成报告.md)。
+项目开发者在本地运行 `make test` 和 `python3 scripts/with-local-mongo.py make verify`，并提供了完整的终端输出。本次结果为：
 
-测试证据应如实填写。如果只执行 `make test`，不能声称完成了真实数据库与浏览器测试。
+| 执行环节 | 实际结果 |
+| --- | --- |
+| `make test` | Go 单元测试通过；Python 配置测试 6/6；Node 前端测试 24/24 |
+| `make verify` → `integration` | Go 单元/真实 MongoDB 集成测试均通过，开启 `-race`，无数据竞争报告；Python 6/6、Node 24/24 |
+| `go test -race -coverpkg=./internal/...` | 输出单元测试包 36.4%、集成测试包 80.3% 的覆盖率；这两个数字**不可直接当作整项目合并覆盖率** |
+| `make verify` → `e2e` | 五个浏览器业务子场景有四个通过；“特殊 ID 与分页”场景失败，断言读取到 0 条而期望 20 条 |
+| `make verify` → `vet`、`build` | 由于 E2E 返回非零状态而中断，**未执行** |
+
+失败发生在“查看填写内容”刚点击后立即读取 `ol li` 数量。这里的分页数据需要等待 HTTP 请求完成并重绘；测试没有等到异步响应，存在测试时序竞态。已经在 `tests/e2e/browser.test.cjs` 中改为等待第 20 条答案出现后再统计。**修正后的 E2E 尚待开发者重新运行，不将本次失败记作通过。**
+
+建议运行：
+
+```sh
+python3 scripts/with-local-mongo.py make e2e
+python3 scripts/with-local-mongo.py make verify
+go tool cover -func=coverage.out | tail -n 1
+```
+
+完成后补记真实运行结果；最后一个命令用于读取覆盖率文件实际报告的 total 值，不用集成测试包单独显示的覆盖率代替。测试证据应如实填写，未执行的检查不能写成通过。
