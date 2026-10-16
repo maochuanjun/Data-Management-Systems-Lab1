@@ -82,9 +82,9 @@ Go 测试日志单独显示的 `36.4%`（单元测试包）与 `80.3%`（集成�
 
 提交 PDF 前可补充少量真实截图，例如问卷设计界面、非法输入与跳转提示、整卷及单题统计。测试命令与结果已记录，本节无需把全部终端日志逐行复制到报告中。
 
-## 6. 本次新增功能的验收（待执行）
+## 6. 本次新增功能的验收（第一次运行及待复测）
 
-以下功能由 2026-10-16 后续的“问卷管理与条件跳转”改动引入，**不同于上面已通过的基线测试**。相关用例已经加入 `tests/integration/http_test.go`、`tests/frontend/frontend.test.cjs` 与 `tests/e2e/browser.test.cjs`；尚未获得该新分支在开发者机器上执行的结果。
+这些用例对应后续新增的删除、归档、恢复、重新开启和条件跳转编辑器，**不同于第 5 节已通过的旧版本基线**。已在开发者机器上完成第一次测试；Go/Python/Node 和真实 MongoDB 集成通过，但 E2E 首次运行失败。详细结果在下方列出。
 
 | 验收项目 | 输入与步骤 | 预期 |
 | --- | --- | --- |
@@ -105,4 +105,33 @@ python3 scripts/with-local-mongo.py make verify
 go tool cover -func=coverage.out | tail -n 1
 ```
 
-在得到实际日志之前，不得把本节新功能标成“通过”；新的覆盖率也需以本次 `coverage.out` 计算结果为准。
+### 6.1 开发者首次运行结果（2026-10-16）
+
+开发者在 `feature/survey-lifecycle-branching-ui` 分支运行了 `make test`、`python3 scripts/with-local-mongo.py make verify`，并提交完整终端日志。
+
+| 环节 | 实际结果 |
+| --- | --- |
+| Go 单元测试 | 通过 |
+| Python 配置测试 | 6 项通过，0 失败 |
+| Node 前端回归 | 27 项通过，0 失败（新增规则选项选择、归档列表用例） |
+| 真实 MongoDB 集成测试 | 单元和集成包均通过，`-race` 未报告数据竞争 |
+| 当前核心包合并语句覆盖率 | **85.5%**（来自失败的 `make verify` 之前生成的 `coverage.out`，并非通过整套 E2E 后的最终验收结论） |
+| Chromium E2E | 1 个业务子场景通过，5 个失败；父测试失败 |
+| `go vet` / Go 构建 | `make verify` 因 E2E 失败提前停止，本次未执行 |
+
+**根因定位：** 首个浏览器子测试在问卷编辑器选择条件值时，`getByLabel('条件值', {exact:true})` 等待超时。真正的 `<select>` 被外层 `<label>` 包裹时，浏览器的可访问名称可能包含下拉选项文字，导致“精确匹配条件值”无法定位。通过真实 Chromium 的最小页面分别复现了无显式名称时的失败，以及添加 `aria-label="条件值"` 后的成功。
+
+已在 `internal/web/static/app.js` 中为由 `field()` 包裹的下拉框设置明确的可访问名称，新增 `tests/frontend/frontend.test.cjs` 的属性断言，并在 E2E 中检查 `aria-label` 后再选取显示文字。后面的注册填写、重复提交、关闭和重新开启测试依赖第一个场景成功发布问卷，因此首个失败引起了多个后续超时；**不能据此判定这些功能本身已失效或已修复**。
+
+### 6.2 修复后的回归要求
+
+本轮修复在 Chromium 最小复现中确认了精确标签定位，**尚未获得开发者真实项目重新执行 E2E 的结果**。需在最新提交的分支上重新运行：
+
+```sh
+git pull --ff-only origin feature/survey-lifecycle-branching-ui
+make test
+python3 scripts/with-local-mongo.py make verify
+go tool cover -func=coverage.out | tail -n 1
+```
+
+得到新结果后，再将本节更新为最终验收结论；特别需要确认首个浏览器场景成功发布问卷，后续归档和重新开启场景也全部通过。
