@@ -28,16 +28,16 @@ python3 scripts/with-local-mongo.py make verify
 
 ## 3. 第一阶段必需用例
 
-下面列出教师要求的六类功能及可重复步骤。真实执行时将“结果”改为当次测试时间和实际输出；表中“历史通过”仅指仓库记录的 2026-10-15 验证。
+下面列出教师要求的六类功能及可重复步骤。2026-10-16 在真实 MongoDB、Chromium 和本地 HTTP 服务上运行的完整测试已通过；下表“已通过”表示相应自动化用例在此次验收中通过。
 
 | 编号 | 类别及操作步骤 | 主要输入 | 预期输出 | 已有依据 |
 | --- | --- | --- | --- | --- |
-| T01 | 注册用户 → 创建问卷草稿 → 读取问卷列表 | 标题“课程反馈”、空题目 | 返回 `201`，状态 `draft`；仅创建者可查看 | HTTP 集成测试，历史通过 |
-| T02 | 在草稿中添加单选、多选、文本、数字题 → 保存 | 四题型、选项 ID、`revision` | 保存成功；旧 revision 返回 `409`；发布后禁止编辑 | 单元、HTTP 和 E2E，历史通过 |
-| T03 | 设定单选/多选/数字规则 → 填写并跳转 | `eq`、`contains_all`、`gte`、`END` | 按首条命中规则向后跳；未命中顺序前进 | 单元、HTTP 和 E2E，历史通过 |
-| T04 | 输入不合法答案再改成合法答案 | 必答空值、多选少于2项、文本长度超限、年龄 121/21 | 非法值返回 `400` 并提示；合法值通过 | 单元、HTTP 和 E2E，历史通过 |
-| T05 | 两个账号填写并提交；再次使用同一账号提交 | 合法答案、匿名标记、`allowRepeat=false` | 首次 `201`，重复 `409`；匿名不保存 `userId` | HTTP/数据库/E2E，历史通过 |
-| T06 | 创建者查看整卷与单题统计，验证平均值和选项次数 | 已知单选/多选/数字答案 | 选项次数、回答份数和平均值符合预期；分页可遍历文本内容 | MongoDB/HTTP/E2E，历史通过 |
+| T01 | 注册用户 → 创建问卷草稿 → 读取问卷列表 | 标题“课程反馈”、空题目 | 返回 `201`，状态 `draft`；仅创建者可查看 | HTTP 集成测试，本次已通过 |
+| T02 | 在草稿中添加单选、多选、文本、数字题 → 保存 | 四题型、选项 ID、`revision` | 保存成功；旧 revision 返回 `409`；发布后禁止编辑 | 单元、HTTP 和 E2E，本次已通过 |
+| T03 | 设定单选/多选/数字规则 → 填写并跳转 | `eq`、`contains_all`、`gte`、`END` | 按首条命中规则向后跳；未命中顺序前进 | 单元、HTTP 和 E2E，本次已通过 |
+| T04 | 输入不合法答案再改成合法答案 | 必答空值、多选少于2项、文本长度超限、年龄 121/21 | 非法值返回 `400` 并提示；合法值通过 | 单元、HTTP 和 E2E，本次已通过 |
+| T05 | 两个账号填写并提交；再次使用同一账号提交 | 合法答案、匿名标记、`allowRepeat=false` | 首次 `201`，重复 `409`；匿名不保存 `userId` | HTTP/数据库/E2E，本次已通过 |
+| T06 | 创建者查看整卷与单题统计，验证平均值和选项次数 | 已知单选/多选/数字答案 | 选项次数、回答份数和平均值符合预期；分页可遍历文本内容 | MongoDB/HTTP/E2E，本次已通过 |
 
 ## 4. 额外边界与回归
 
@@ -54,34 +54,30 @@ python3 scripts/with-local-mongo.py make verify
 | 本轮新增：只读汇总 | 请求 `?summaryOnly=true` 和非法参数 | 汇总保留计数与均值，`values=[]`；非法值返回 `400` |
 | 本轮新增：Unicode 密码 | 少于8个汉字字符，以及8个汉字字符 | 前者 `400`，后者可注册 |
 
-## 5. 已有测试结果与本轮验证边界
+## 5. 测试结果（2026-10-16）
 
-**历史执行记录（2026-10-15，整理前的版本）：**
+开发者在 `coursework/phase1-cleanup-report` 分支上实际执行了 `make test`、独立的 `make e2e`、完整的 `python3 scripts/with-local-mongo.py make verify` 和覆盖率汇总命令。以下数据来自终端日志，不是预估值。
 
-- 仓库原有记录显示：真实 MongoDB 集成测试、Go 竞态检查通过；前端 22 项用例通过；Chromium 端到端的 5 个业务场景通过。
-- 当时记录的 `internal/domain`、`internal/store`、`internal/web` 跨包语句覆盖率为 85.6%，不是当前修改分支重新计算的覆盖率。
-- 这些执行记录可追溯到此前版本的测试日志与 Git 历史，不能当作本次改动后的自动验收结果。
+| 检查 | 命令或工具 | 实际结果 |
+| --- | --- | --- |
+| Go 单元测试 | `go test -count=1 ./tests/unit` | 通过 |
+| Python 配置测试 | `python3 -m unittest discover -s tests/unit -p '*_test.py'` | 6 项通过，0 失败 |
+| Node 前端测试 | `node --test tests/frontend/frontend.test.cjs` | 24 项通过，0 失败 |
+| 真实 MongoDB 集成 | `go test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out ./tests/unit ./tests/integration` | 两个 Go 测试包通过；未报告数据竞争 |
+| Chromium E2E 单独复测 | `make e2e` | 5 个业务子场景通过（Node 测试器汇总 6/6，包括父测试） |
+| 完整验收 | `python3 scripts/with-local-mongo.py make verify` | 成功完成数据库集成、Python/Node 测试、Chromium E2E、`go vet ./...` 与 Go 构建 |
+| 核心包合并语句覆盖率 | `go tool cover -func=coverage.out \| tail -n 1` | **86.1%** |
 
-**2026-10-16 本轮整理与本地复核：**
+Go 测试日志单独显示的 `36.4%`（单元测试包）与 `80.3%`（集成测试包）不是整个项目的汇总值；**86.1%** 才是 `coverage.out` 的 total 行。此覆盖率统计范围由 `-coverpkg=./internal/...` 指定，不包括所有程序入口及外部工具。
 
-项目开发者在本地运行 `make test` 和 `python3 scripts/with-local-mongo.py make verify`，并提供了完整的终端输出。本次结果为：
+### 5.1 本轮问题与修复验证
 
-| 执行环节 | 实际结果 |
-| --- | --- |
-| `make test` | Go 单元测试通过；Python 配置测试 6/6；Node 前端测试 24/24 |
-| `make verify` → `integration` | Go 单元/真实 MongoDB 集成测试均通过，开启 `-race`，无数据竞争报告；Python 6/6、Node 24/24 |
-| `go test -race -coverpkg=./internal/...` | 输出单元测试包 36.4%、集成测试包 80.3% 的覆盖率；这两个数字**不可直接当作整项目合并覆盖率** |
-| `make verify` → `e2e` | 五个浏览器业务子场景有四个通过；“特殊 ID 与分页”场景失败，断言读取到 0 条而期望 20 条 |
-| `make verify` → `vet`、`build` | 由于 E2E 返回非零状态而中断，**未执行** |
+第一次完整验收时，前端与 MongoDB 测试已经通过，但 E2E 的“特殊题目 ID 与分页”场景在点击“查看填写内容”后立即读取 DOM 行数，得到 0 条而不是预期的 20 条。排查发现原始答案由异步 HTTP 请求加载，断言执行得过早；因此在 `tests/e2e/browser.test.cjs` 中先等待第 20 条答案元素出现，再检查数量。
 
-失败发生在“查看填写内容”刚点击后立即读取 `ol li` 数量。这里的分页数据需要等待 HTTP 请求完成并重绘；测试没有等到异步响应，存在测试时序竞态。已经在 `tests/e2e/browser.test.cjs` 中改为等待第 20 条答案出现后再统计。**修正后的 E2E 尚待开发者重新运行，不将本次失败记作通过。**
+修复后先单独运行真实 Chromium E2E，通过 5 个业务子场景；随后完整执行 `make verify`，上述 E2E 再次通过，并成功运行 `go vet` 和构建。没有因测试失败而省略后续步骤。
 
-建议运行：
+这一结果验证了当前测试覆盖的主要功能，不等于完成生产压力测试、所有浏览器兼容性测试或完整安全审计。第二阶段仍应执行旧数据兼容与所有核心功能回归。
 
-```sh
-python3 scripts/with-local-mongo.py make e2e
-python3 scripts/with-local-mongo.py make verify
-go tool cover -func=coverage.out | tail -n 1
-```
+### 5.2 报告所需的人工证据
 
-完成后补记真实运行结果；最后一个命令用于读取覆盖率文件实际报告的 total 值，不用集成测试包单独显示的覆盖率代替。测试证据应如实填写，未执行的检查不能写成通过。
+提交 PDF 前可补充少量真实截图，例如问卷设计界面、非法输入与跳转提示、整卷及单题统计。测试命令与结果已记录，本节无需把全部终端日志逐行复制到报告中。
