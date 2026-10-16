@@ -66,11 +66,11 @@ test('real browser: creation, validation, branching, anonymity, paging and closu
     await cards.nth(3).getByLabel('最小数值', {exact:true}).fill('0');
     await cards.nth(3).getByLabel('最大数值', {exact:true}).fill('120');
     await cards.nth(3).getByLabel('只接受整数').check();
-    const endOption = await cards.nth(0).locator('.option-row code').nth(1).textContent();
     await cards.nth(0).getByText(/条件跳转/).click();
     await cards.nth(0).getByRole('button', {name:'＋ 增加规则'}).click();
     await cards.nth(0).getByText(/条件跳转/).click();
-    await cards.nth(0).getByLabel('条件值', {exact:true}).fill(endOption);
+    // The UI displays option labels; the stored rule still uses a stable ID.
+    await cards.nth(0).getByLabel('条件值', {exact:true}).selectOption({label:'直接结束'});
     await page.getByRole('button', {name:'保存并发布'}).click();
     await heading(page, '问卷详情');
     assert.equal(await page.getByLabel('问卷分享链接').inputValue(), baseURL+'/survey/'+surveyID);
@@ -171,5 +171,30 @@ test('real browser: creation, validation, branching, anonymity, paging and closu
     await answerPage.goto(baseURL+'/survey/'+surveyID);
     await answerPage.getByText('问卷尚未开放或已结束，暂时无法填写。').waitFor();
     assert.deepEqual(pageErrors, []);
+  });
+
+  await t.test('creator can reopen, archive and restore without losing answers', async()=>{
+    await page.goto(baseURL+'/edit/'+surveyID);
+    await page.getByRole('button',{name:'重新开启问卷'}).click();
+    await page.locator('.badge.published').waitFor();
+    await answerPage.goto(baseURL+'/survey/'+surveyID);
+    await heading(answerPage,'是否继续填写？');
+
+    page.once('dialog',dialog=>dialog.accept());
+    await page.getByRole('button',{name:'归档问卷'}).click();
+    await page.getByRole('heading',{name:'归档管理'}).waitFor();
+    await page.goto(baseURL+'/');
+    await page.getByRole('button',{name:'查看已归档问卷'}).click();
+    await page.getByText('端到端体验调查',{exact:true}).waitFor();
+    await page.getByRole('link',{name:'查看问卷'}).first().click();
+    await page.getByRole('button',{name:'恢复归档'}).click();
+    await page.locator('.badge.closed').waitFor();
+    await page.getByRole('button',{name:'重新开启问卷'}).click();
+    await page.locator('.badge.published').waitFor();
+
+    const result=await owner.request.get(baseURL+'/api/surveys/'+surveyID+'/stats?summaryOnly=true');
+    assert.equal(result.status(),200);
+    assert.equal((await result.json()).totalResponses,2);
+    assert.deepEqual(pageErrors,[]);
   });
 });
