@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/with-local-mongo.py"
 spec = importlib.util.spec_from_file_location("project_config", SCRIPT)
 loader = importlib.util.module_from_spec(spec)
