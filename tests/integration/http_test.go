@@ -478,3 +478,137 @@ func TestDistinctAccountsSubmitConcurrently(t *testing.T) {
 		t.Fatalf("totalResponses = %v", stats["totalResponses"])
 	}
 }
+
+func TestSurveyDeleteArchiveRestoreAndReopen(t *testing.T) {
+	fixture := support.NewMongo(t)
+	server := httptest.NewServer(web.New(fixture.Store, false))
+	t.Cleanup(server.Close)
+	owner := newIntegrationClient(t, server.URL)
+	respondent := newIntegrationClient(t, server.URL)
+	other := newIntegrationClient(t, server.URL)
+	for _, tc := range []struct {
+		client integrationHTTP
+		name   string
+	}{{owner, "lifecycle_owner"}, {respondent, "lifecycle_respondent"}, {other, "lifecycle_other"}} {
+		tc.client.must(t, "POST", "/api/register", map[string]string{
+			"username": tc.name, "password": "test-password-123",
+		}, 201)
+	}
+
+	// A draft may be archived, restored, and permanently deleted.
+	draft := integrationDecode[domain.Survey](t, owner.must(t, "POST", "/api/surveys",
+		domain.Survey{Title: "Temporary draft", Archived: true}, 201))
+	if draft.Archived {
+		t.Fatal("API callers must not be able to create a pre-archived survey")
+	}
+	private := "/api/surveys/" + draft.ID
+	respondent.must(t, "DELETE", private, nil, 404)
+	respondent.must(t, "POST", private+"/archive", nil, 404)
+	archived := integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/archive", nil, 200))
+	if !archived.Archived || archived.Status != "draft" || archived.Revision != draft.Revision+1 {
+		t.Fatalf("archived draft changed unexpectedly: %#v", archived)
+	}
+	owner.must(t, "PUT", private, draft, 409)
+	owner.must(t, "POST", private+"/publish", nil, 409)
+	listed := integrationDecode[[]domain.Survey](t, owner.must(t, "GET", "/api/surveys", nil, 200))
+	if len(listed) != 1 || !listed[0].Archived {
+		t.Fatalf("archived survey must remain visible to its owner: %#v", listed)
+	}
+	restored := integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/restore", nil, 200))
+	if restored.Archived || restored.Status != "draft" || restored.Revision != archived.Revision+1 {
+		t.Fatalf("restoring draft: %#v", restored)
+	}
+	owner.must(t, "DELETE", private, nil, 200)
+	owner.must(t, "GET", private, nil, 404)
+
+	// Configured single-choice rules still use stable IDs, never display text.
+	survey := integrationDecode[domain.Survey](t, owner.must(t, "POST", "/api/surveys",
+		domain.Survey{Title: "Branch and lifecycle", AllowAnonymous: true, Questions: []domain.Question{
+			{ID: "gender", Title: "男或女", Type: "single", Required: true,
+				Options: []domain.Option{{ID: "male", Label: "男"}, {ID: "female", Label: "女"}},
+				Rules: []domain.Rule{{Operator: "eq", Value: "male", Target: "details"},
+					{Operator: "eq", Value: "female", Target: "age"}}},
+			{ID: "details", Title: "后续必答题", Type: "text", Required: true},
+			{ID: "age", Title: "年龄", Type: "number", Required: true,
+				Validation: domain.Validation{Integer: true}},
+		}}, 201))
+	private = "/api/surveys/" + survey.ID
+	public := "/api/public/surveys/" + survey.ID
+	owner.must(t, "POST", private+"/publish", nil, 200)
+	checkNext := func(value string, expected int, target string) {
+		t.Helper()
+		body := respondent.must(t, "POST", public+"/next", map[string]any{
+			"questionId": "gender", "answer": value,
+		}, expected)
+		if expected == 200 {
+			got := integrationDecode[map[string]any](t, body)
+			if got["nextQuestionId"] != target {
+				t.Fatalf("next(gender=%q)=%v, want %q", value, got, target)
+			}
+		}
+	}
+	checkNext("male", 200, "details")  // Same as the default next question.
+	checkNext("female", 200, "age")   // Must skip required "details".
+	checkNext("女", 400, "")
+	respondent.must(t, "POST", public+"/responses", integrationAnswers(false,
+		map[string]any{"gender": "female", "age": 18}), 201)
+	owner.must(t, "DELETE", private, nil, 409) // No deletion of published data.
+
+	// Closing is reversible; original answers and deduplication survive.
+	owner.must(t, "POST", private+"/close", nil, 200)
+	respondent.must(t, "POST", public+"/responses", integrationAnswers(false,
+		map[string]any{"gender": "male", "details": "yes", "age": 18}), 409)
+	reopened := integrationDecode[domain.Survey](t, owner.must(t, "POST",
+		private+"/reopen", map[string]any{}, 200))
+	if reopened.Status != "published" || reopened.Archived {
+		t.Fatalf("reopened status: %#v", reopened)
+	}
+	respondent.must(t, "POST", public+"/responses", integrationAnswers(false,
+		map[string]any{"gender": "female", "age": 22}), 409) // Repeat policy remains in effect.
+	other.must(t, "POST", public+"/responses", integrationAnswers(false,
+		map[string]any{"gender": "female", "age": 21}), 201)
+
+	// Archiving an active survey closes it atomically, but preserves statistics.
+	archived = integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/archive", nil, 200))
+	if !archived.Archived || archived.Status != "closed" {
+		t.Fatalf("published archive must be closed: %#v", archived)
+	}
+	respondent.must(t, "GET", public, nil, 404)
+	owner.must(t, "POST", private+"/reopen", map[string]any{}, 409)
+	var stats struct {
+		Total int `json:"totalResponses"`
+	}
+	if err := json.Unmarshal(owner.must(t, "GET", private+"/stats", nil, 200), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Total != 2 {
+		t.Fatalf("archiving deleted submitted answers: %d", stats.Total)
+	}
+	restored = integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/restore", nil, 200))
+	if restored.Archived || restored.Status != "closed" {
+		t.Fatalf("restoration must not silently reopen the survey: %#v", restored)
+	}
+	owner.must(t, "POST", private+"/reopen", map[string]any{}, 200)
+
+	// An expired deadline cannot be reused; the owner may replace or clear it.
+	owner.must(t, "POST", private+"/close", nil, 200)
+	past := time.Now().Add(-time.Hour)
+	if _, err := fixture.DB.Collection("surveys").UpdateOne(fixture.Context,
+		bson.M{"_id": survey.ID}, bson.M{"$set": bson.M{"deadline": past}}); err != nil {
+		t.Fatal(err)
+	}
+	owner.must(t, "POST", private+"/reopen", map[string]any{}, 400)
+	future := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	reopened = integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/reopen",
+		map[string]any{"deadline": future}, 200))
+	if reopened.Deadline == nil || !reopened.Deadline.Equal(future) {
+		t.Fatalf("new deadline not applied: %#v", reopened.Deadline)
+	}
+	owner.must(t, "POST", private+"/close", nil, 200)
+	reopened = integrationDecode[domain.Survey](t, owner.must(t, "POST", private+"/reopen",
+		map[string]any{"deadline": nil}, 200))
+	if reopened.Deadline != nil {
+		t.Fatal("explicit null must clear the deadline")
+	}
+	respondent.must(t, "GET", public, nil, 200)
+}
