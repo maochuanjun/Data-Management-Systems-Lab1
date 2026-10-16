@@ -404,3 +404,65 @@ for (const outcome of ['resolve', 'reject']) {
     assert.equal(text(walk(root).find(node => node.className === 'large-number')), '21');
   });
 }
+
+function ruleEditorField(root,label,tag) {
+  const container=walk(root).find(node=>node.tag==='label' &&
+    node.children[0]?.tag==='span' && text(node.children[0])===label &&
+    node.children.some(child=>child.tag===tag));
+  assert.ok(container,`rule field ${label} exists`);
+  return container.children.find(child=>child.tag===tag);
+}
+
+test('single-choice branching uses visible option labels while storing stable IDs',async()=>{
+  const survey={...draft(),questions:[
+    {id:'q1',title:'男或女',type:'single',required:true,
+      options:[{id:'male_id',label:'男'},{id:'female_id',label:'女'}],validation:{},rules:[]},
+    {id:'q2',title:'默认下一题',type:'text',required:true,validation:{},rules:[]},
+    {id:'q3',title:'女生题目',type:'text',required:true,validation:{},rules:[]}
+  ]};
+  const ui=await browser(request=>{
+    if(request.method==='PUT')return {...request.body,revision:2};
+    return survey;
+  });
+  const root=await ui.view('editorView');
+  await click(findButton(root,'＋ 增加规则'));
+  const value=ruleEditorField(root,'条件值','select');
+  assert.equal(walk(value).some(node=>node.tag==='option'&&text(node)==='女'),true);
+  change(value,'female_id','change');
+  change(ruleEditorField(root,'跳转到','select'),'q3','change');
+  await click(findButton(root,'保存草稿'));
+  const saved=ui.calls.find(c=>c.method==='PUT').body;
+  assert.equal(saved.questions[0].rules[0].operator,'eq');
+  assert.equal(saved.questions[0].rules[0].value,'female_id');
+  assert.equal(saved.questions[0].rules[0].target,'q3');
+});
+
+test('multiple-choice contains_all selects labels but persists an array of IDs',async()=>{
+  const survey={...draft(),questions:[
+    {id:'q1',title:'喜欢的水果',type:'multiple',required:true,
+      options:[{id:'apple',label:'苹果'},{id:'pear',label:'梨'}],validation:{},rules:[]},
+    {id:'q2',title:'下一题',type:'text',required:true,validation:{},rules:[]}
+  ]};
+  const ui=await browser(request=>request.method==='PUT'?{...request.body,revision:2}:survey);
+  const root=await ui.view('editorView');
+  await click(findButton(root,'＋ 增加规则'));
+  change(ruleEditorField(root,'如果答案','select'),'contains_all','change');
+  const pear=walk(root).find(node=>node.tag==='label'&&node.className==='check'&&
+    node.children.some(child=>child.tag==='input'&&child.type==='checkbox')&&text(node).includes('梨'));
+  assert.ok(pear);
+  change(pear.children[0],true,'change');
+  await click(findButton(root,'保存草稿'));
+  assert.deepEqual(ui.calls.find(c=>c.method==='PUT').body.questions[0].rules[0].value,['apple','pear']);
+});
+
+test('dashboard hides archived questionnaires until requested',async()=>{
+  const original={...draft(),id:'s',title:'Visible draft'};
+  const archive={...draft(),id:'archive',title:'Archived survey',status:'closed',archived:true};
+  const ui=await browser(({url})=>url==='/api/surveys'?[original,archive]:original);
+  const root=await ui.view('dashboard');
+  assert.match(text(root),/Visible draft/);
+  assert.doesNotMatch(text(root),/Archived survey/);
+  await click(findButton(root,'查看已归档问卷'));
+  assert.match(text(root),/Archived survey/);
+  assert.doesNotMatch(text(root),/Visible draft/);
+});
