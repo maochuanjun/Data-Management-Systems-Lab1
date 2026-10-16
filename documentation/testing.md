@@ -66,7 +66,7 @@ python3 scripts/with-local-mongo.py make verify
 | 真实 MongoDB 集成 | `go test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out ./tests/unit ./tests/integration` | 两个 Go 测试包通过；未报告数据竞争 |
 | Chromium E2E 单独复测 | `make e2e` | 5 个业务子场景通过（Node 测试器汇总 6/6，包括父测试） |
 | 完整验收 | `python3 scripts/with-local-mongo.py make verify` | 成功完成数据库集成、Python/Node 测试、Chromium E2E、`go vet ./...` 与 Go 构建 |
-| 核心包合并语句覆盖率 | `go tool cover -func=coverage.out \| tail -n 1` | **86.1%** |
+| 核心包合并语句覆盖率 | `go tool cover -func=coverage.out` 的 total 行 | **86.1%** |
 
 Go 测试日志单独显示的 `36.4%`（单元测试包）与 `80.3%`（集成测试包）不是整个项目的汇总值；**86.1%** 才是 `coverage.out` 的 total 行。此覆盖率统计范围由 `-coverpkg=./internal/...` 指定，不包括所有程序入口及外部工具。
 
