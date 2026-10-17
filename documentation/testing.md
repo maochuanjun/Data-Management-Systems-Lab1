@@ -45,7 +45,7 @@ make e2e
 INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 ~~~
 
-**环境要求：** Go 1.26+、Make；默认数据库模式还需 Docker Compose；`make test` 的前端部分需 Node.js；`make e2e` 另外需 Playwright/Chromium。全部默认参数写在 Makefile 中，不需要 Python 或 `.env.example`。数据库连接失败应检查 `docker compose ps`、`docker compose logs mongodb` 和自定义连接地址。
+**环境要求：** Go 1.26+、Make；默认数据库模式还需 Docker Compose；`make test` 的前端部分需 Node.js；`make e2e` 另外需 Playwright/Chromium。默认连接与服务参数写在 Makefile 中，不需要 Python 或额外的环境模板文件。数据库连接失败应检查 `docker compose ps`、`docker compose logs mongodb` 和自定义连接地址。
 
 ## 三、2026-10-17 本机日志及后续修复
 
