@@ -2,7 +2,7 @@
 
 依据《大作业一》“至少六类测试”的要求，分别列出**步骤、输入、预期输出和结果**。自动化用例主要位于 tests/unit、tests/integration；界面测试位于 tests/frontend、tests/e2e。
 
-**执行结果说明：** 2026-10-17，提交者已在 `coursework/remove-python-launchers-20261017` 分支运行 `make test`、`make integration` 和 `make verify`，并提供完整终端输出。Go 单元测试、31 项 JavaScript 前端测试及 MongoDB 集成测试均通过，`go vet` 和构建通过。以下六类用例具有对应自动化测试代码；测试包整体通过，但终端未逐一打印全部测试步骤的输入/响应详情。可选 Chromium E2E 尚未执行。
+**执行结果说明：** 2026-10-17，提交者已在 `coursework/remove-python-launchers-20261017` 分支运行 `make test`、`make integration` 和 `make verify`，并提供完整终端输出。Go 单元测试、31 项 JavaScript 前端测试及 MongoDB 集成测试均通过，`go vet` 和构建通过。以下六类用例具有对应自动化测试代码；测试包整体通过，但终端未逐一打印全部测试步骤的输入/响应详情。Chromium E2E 在补装本地 Playwright/Chromium 后 **7/7 通过**（包括父测试与 6 个业务子场景）。
 
 ## 一、六类课程必需测试
 
@@ -67,7 +67,9 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 | `make verify` — `go vet ./...` | 正常执行，无错误输出 | 通过 |
 | `make verify` — `go build -o bin/survey-lab ./cmd/server` | 正常结束，无报错 | 通过 |
 | `go tool cover -func=coverage.out \| tail -n 1` | `total: (statements) 85.7%` | **核心后端包合并语句覆盖率 85.7%** |
-| `make e2e` | 此次日志中没有执行 | **未验证** |
+| `make e2e`（首次） | Node.js 报 `Cannot find module 'playwright'` | 缺少可选测试依赖，未运行浏览器用例 |
+
+| `npm install` 与 `npx playwright install chromium` 后再次执行 `make e2e` | Playwright 安装完成；Chromium 六项业务子场景均成功；`tests 7; pass 7; fail 0`；Go 包 `PASS` | **7/7 通过（含父测试）** |
 
 **覆盖率说明：** 日志中的 33.2% 和 80.4% 分别是单元测试包与集成测试包执行时显示的覆盖比例，不能相加；由同一 `coverage.out` 汇总工具给出的 85.7% 是本次应引用的最终合并语句覆盖率。该百分比说明执行路径覆盖，不等于全部需求或业务边界已被证明正确。
 
@@ -75,4 +77,4 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 
 ## 五、仍需补充的课程展示材料
 
-目前无需再将 MongoDB 集成测试记为“未复测”。如准备提交课程作业，建议保存这份真实终端日志，以及创建、题目编辑、条件跳转、错误输入、提交和统计页面的操作截图。若需要单独证明浏览器的完整流程，再安装 Playwright/Chromium 并运行 `make e2e`，把结果补录到本文。浏览器验收未执行时不得填“通过”。
+目前无需再将 MongoDB 集成测试记为“未复测”。如准备提交课程作业，建议保存这份真实终端日志，以及创建、题目编辑、条件跳转、错误输入、提交和统计页面的操作截图。本次已经在真实 Chromium 浏览器中通过 E2E 自动化验收（7/7，含父测试）。仍建议保留创建、编辑、跳转、错误提示、提交、统计的页面截图，供课程报告展示；E2E 自动测试通过不等于已完成报告截图。
