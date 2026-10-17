@@ -21,20 +21,19 @@
 
 ## 二、运行
 
-环境：Go 1.26 或更新版本、MongoDB（示例使用 Docker Compose）和 Make。执行前端测试还需要 Node.js；浏览器验收另外需要 Playwright 和 Chromium。
+需要 Go 1.26+、Docker（包含 Compose）和 Make。默认的 MongoDB 连接信息、数据库名、监听地址及端口均在根目录 **Makefile** 中定义，无需 Python 或 `.env` 文件。
 
 ~~~sh
-docker compose up -d
 make run
 ~~~
 
-打开 http://127.0.0.1:8080 。
+`make run` 会先通过 Docker Compose 启动并等待 MongoDB 健康检查通过，然后直接运行 Go 服务。浏览器访问 http://127.0.0.1:8080 。
 
-- 默认连接本机 **27018** 端口的 MongoDB，数据库名为 `questionnaire_lab1`。`make run` 直接启动 Go 程序，不再调用 Python。
-- 使用其他 MongoDB 时，通过环境变量或 Make 参数覆盖，例如：`MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run`。
-- `.env.example` 仅是环境变量参考模板，**Make 不自动加载 `.env`**。如需沿用已有 `.env`，可在 POSIX shell 中先执行 `set -a; . ./.env; set +a`，然后执行 `make run`；`go run ./cmd/server` 也可直接使用已导出的变量。
-- 分享链接形如 /survey/{id}。填写者仍需登录；“匿名”表示答卷不直接保存用户 ID，不表示免登录。
-- 通过其他设备访问时，请自行调整监听地址和网络可访问性。本项目未提供公网部署。
+- 默认 MongoDB 地址为 `127.0.0.1:27018`，数据库名为 `questionnaire_lab1`；容器由 `compose.yaml` 定义，数据存放在 Docker 命名卷中。
+- 已有独立 MongoDB 时无需 Docker：用 `MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run` 指定地址即可（自定义 URI 时不会自动启动 Compose）。
+- Makefile 还支持 `LISTEN_ADDR`、`PORT`、`COOKIE_SECURE` 和仅用于测试的 `INTEGRATION_MONGO_URI` 参数。密码等敏感信息应通过本地环境变量传入，不要提交到仓库。
+- 分享链接形如 `/survey/{id}`；填写者须先登录，匿名提交仅表示答卷不直接保存用户 ID。
+- 跨设备访问时需要调整监听地址及网络配置；本项目未提供公网部署。
 
 ## 三、演示顺序
 
@@ -49,8 +48,9 @@ make run
 ## 四、测试
 
 ~~~sh
-make test          # Go 业务逻辑与前端测试（不依赖 MongoDB）
-make integration   # 真实 MongoDB 集成测试
+make test          # Go 单元测试 + JavaScript 前端测试（不需要 MongoDB）
+make integration   # 自动启动 MongoDB，执行真实数据库集成测试
+make verify        # 核心测试 + 静态检查 + 构建（不含可选浏览器测试）
 ~~~
 
 浏览器端到端测试是补充验收，首次执行需要安装 Node.js 开发依赖和 Chromium：
@@ -61,7 +61,7 @@ npx playwright install chromium
 make e2e
 ~~~
 
-`make integration` 使用 `INTEGRATION_MONGO_URI`（默认等于 `MONGO_URI`），测试时自动创建并清理独立数据库，不会清空正常问卷数据。
+`make integration` 默认会先启动并等待 Docker Compose 中的 MongoDB；指定不同的 `INTEGRATION_MONGO_URI` 时则连接已有数据库，不启动 Compose。集成测试创建和清理独立随机测试库，不会清空正常问卷数据。集成测试失败时不保留不完整的 `coverage.out`。
 
 测试用例的**步骤、输入、预期输出、实际结果填写位置**见 [测试说明](documentation/testing.md)。仓库中原有的历史测试通过记录不等于这份最终代码已经复测；正式提交请运行测试并保存真实输出。
 
