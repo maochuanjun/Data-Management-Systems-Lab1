@@ -1,75 +1,66 @@
-# 基于 MongoDB 的在线问卷系统
+# 在线问卷系统（MongoDB + Go）
 
-《当代数据管理系统》第一次大作业 · 第一阶段
+《当代数据管理系统》第一次大作业·第一阶段。
 
-本项目实现一个简单的在线问卷系统：用户登录后创建、发布问卷，其他已登录用户通过链接填写，系统将答案存入 MongoDB，并提供整卷及单题统计。
+本项目实现问卷创建、发布、填写、条件跳转和结果统计。后端用 Go，数据保存在 MongoDB，网页使用原生 HTML/CSS/JavaScript。程序不依赖关系数据库或现成问卷系统。
 
-课程重点是 **MongoDB 数据模型、后端校验、条件跳转和统计**。前端使用原生 HTML/CSS/JavaScript，只承担问卷编辑、填写和结果展示。
+## 功能
 
-## 一、作业功能
+- 注册、登录；用户只能管理自己创建的问卷和查看对应统计。
+- 创建问卷、添加题目、设置截止时间，发布后通过 `/survey/{id}` 分享，必要时关闭。
+- 三类题型：单选、多选、填空（文本或数字）；支持必答、选择数量、字数、数值范围和整数校验。
+- 根据单选、多选及数字填空的答案执行问卷中配置的条件跳转。
+- 登录后填写，按设置匿名提交或限制同一账号重复填写；每次答卷独立存入 MongoDB。
+- 创建者查询整卷或单题统计，包括选项次数、数字平均值和填空内容。
 
-| 功能 | 当前实现 |
-| --- | --- |
-| 账号与权限 | 注册、登录、退出；只能管理和统计自己的问卷 |
-| 问卷管理 | 创建草稿、设置标题和说明、匿名选项、截止时间、发布和关闭、分享链接 |
-| 三类题型 | 单选、多选、填空；填空分文本和数字两种子类型 |
-| 答案约束 | 必答、选项有效性、多选数量、文本长度、数字范围及整数检查 |
-| 条件跳转 | 单选、多选、数字填空按问卷中保存的规则跳转或提前结束 |
-| 提交与统计 | 登录填写、匿名选项、允许/禁止重复提交、保存答卷、查看整卷及单题统计 |
+## 运行
 
-问卷的题目和跳转规则内嵌在 MongoDB **surveys** 集合中；每次提交作为独立文档存入 **responses** 集合。数据库设计理由、索引及校验分工见 [MongoDB 设计说明](documentation/design.md)。
-
-## 二、运行
-
-需要 Go 1.26+、MongoDB（示例使用 Docker Compose）和 Make。默认的 MongoDB 连接信息、数据库名、监听地址及端口均在根目录 **Makefile** 中定义。
+需要 Go 1.26+、Make、MongoDB。默认用 Docker Compose 运行本地 MongoDB：
 
 ~~~sh
 make run
 ~~~
 
-`make run` 会先通过 Docker Compose 启动并等待 MongoDB 健康检查通过，然后直接运行 Go 服务。浏览器访问 <http://127.0.0.1:8080> 。
+浏览器打开 <http://127.0.0.1:8080>。Makefile 会先启动本地 MongoDB 并等待其健康，再运行 Go 服务；默认数据库为 `questionnaire_lab1`，MongoDB 在主机 `127.0.0.1:27018`。
 
-- 默认 MongoDB 地址为 `127.0.0.1:27018`，数据库名为 `questionnaire_lab1`；容器由 `compose.yaml` 定义，数据存放在 Docker 命名卷中。
-- 已有独立 MongoDB 时无需 Docker：用 `MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run` 指定地址即可（自定义 URI 时不会自动启动 Compose）。
-- Makefile 还支持 `LISTEN_ADDR`、`PORT`、`COOKIE_SECURE` 和仅用于测试的 `INTEGRATION_MONGO_URI` 参数。
-- 分享链接形如 `/survey/{id}`；填写者须先登录，匿名提交仅表示答卷不直接保存用户 ID。
-
-## 三、演示顺序
-
-1. 注册账号 A，创建问卷，依次添加单选、多选、文本填空和数字填空，并配置答案限制。
-2. 为单选、多选或数字填空设置跳转目标（后面的题目或 END），保存并发布。
-3. 复制问卷链接，用账号 B 登录填写，演示命中跳转、非法答案提示及正确提交。
-4. 用账号 A 查看各选项次数、回答份数、数字平均值及填空内容；再演示禁止重复提交。
-5. 关闭问卷，检查新的提交被拒绝。
-
-## 四、测试
+使用已有数据库时可覆盖连接地址：
 
 ~~~sh
-make test          # Go 单元测试 + JavaScript 前端测试（不需要 MongoDB）
-make integration   # 自动启动 MongoDB，执行真实数据库集成测试
-make verify        # 核心测试 + 静态检查 + 构建（不含可选浏览器测试）
+MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run
 ~~~
 
-浏览器端到端测试首次执行需要安装 Node.js 开发依赖和 Chromium：
+填写者必须先登录。匿名提交表示答卷不直接保存用户 ID，不表示免登录。
+
+## 测试
 
 ~~~sh
-npm install
+make test          # Go 单元测试与 JavaScript 前端测试
+make integration   # MongoDB 集成测试
+make verify        # 以上核心测试、go vet、构建
+~~~
+
+可选浏览器端到端测试需要 Node.js、Playwright 和 Chromium：
+
+~~~sh
+npm ci
 npx playwright install chromium
 make e2e
 ~~~
 
-`make integration` 默认会先启动并等待 Docker Compose 中的 MongoDB；指定不同的 `INTEGRATION_MONGO_URI` 时则连接已有数据库，不启动 Compose。集成测试创建和清理独立随机测试库，不会清空正常问卷数据。
+2026-10-17 的本机验收记录：前端 **31/31**、Chromium **7/7**（含父测试）、MongoDB 集成测试通过，Go 合并语句覆盖率 **85.7%**。测试用例及结果见 [测试说明](documentation/testing.md)。
 
-## 五、代码与提交材料
+## 文档与目录
 
 | 路径 | 内容 |
 | --- | --- |
-| cmd/server/ | 服务启动 |
-| internal/domain/ | 三类题型、答案约束、跳转及整卷提交校验 |
-| internal/store/ | MongoDB Schema、索引、CRUD 和聚合统计 |
-| internal/web/ | HTTP 接口、会话与前端页面 |
-| tests/ | 课程六类测试及补充回归 |
-| [MongoDB 设计说明](documentation/design.md) | 集合、嵌入与引用、索引、统计、业务约束 |
-| [API 说明](documentation/api.md) | 请求方式、参数及返回结果 |
-| [测试说明](documentation/testing.md) | 六类用例与复测记录 |
-| [AI 使用记录](documentation/ai-log.md) | 真实提示词摘录、代码产物、问题及修改 |
+| `internal/domain/` | 问卷结构、答案校验、条件跳转 |
+| `internal/store/` | MongoDB Schema、索引、数据读写和统计 |
+| `internal/web/` | HTTP 接口、认证与网页 |
+| `cmd/server/` | 程序入口 |
+| `tests/` | 单元、集成、前端和浏览器测试 |
+| [MongoDB 设计](documentation/design.md) | 集合划分、设计理由、索引与业务逻辑 |
+| [API 说明](documentation/api.md) | 接口、参数与返回值 |
+| [测试用例与结果](documentation/testing.md) | 六类必需测试的步骤、输入、输出和结果 |
+| [AI 使用日志](documentation/ai-log.md) | 工具、提示词、代码产物及修改记录 |
+
+**项目完成报告单独提交课程作业平台，不作为代码仓库文件。**
