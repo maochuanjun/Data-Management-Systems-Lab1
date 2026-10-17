@@ -1,164 +1,120 @@
-# MongoDB 数据库与核心逻辑设计
+# MongoDB 数据库设计与关键逻辑
 
-本文档重点回答三个问题：**数据怎样存、为什么采用这种结构、数据库与后端如何共同保证业务正确性**。
+本项目是《当代数据管理系统》第一次大作业的在线问卷系统。业务数据全部保存于 MongoDB，后端使用 Go。本文集中说明集合划分、文档结构、索引、约束及主要数据操作。
 
-## 一、系统结构
+## 1. 为什么这样设计
 
-~~~text
-浏览器（创建、填写、统计）
-          ↓ HTTP/JSON
-internal/web    会话、权限、接口
-          ↓
-internal/domain 问卷结构、答案校验、条件跳转
-          ↓
-internal/store  MongoDB CRUD、索引、统计聚合
-          ↓
-        MongoDB
-~~~
+系统实际有四种数据：用户、登录会话、问卷定义和填写记录。它们的访问方式和生命周期不同，因此分别放在 `users`、`sessions`、`surveys`、`responses` 四个集合中。
 
-程序入口是 cmd/server/main.go。前端不直接操作数据库；所有持久化数据均进入 MongoDB，不使用关系数据库或第三方问卷系统。
-
-## 二、集合划分与数据关联
-
-| 集合 | 关键字段 | 作用及关系 |
+| 集合 | 关键字段 | 用途 |
 | --- | --- | --- |
-| users | _id、username、passwordHash、createdAt | 保存账号；密码为 bcrypt 哈希 |
-| sessions | _id、userId、expiresAt | 登录会话；_id 是令牌哈希，userId 指向用户 |
-| surveys | _id、ownerId、title、description、status、deadline、questions、revision、schemaVersion | 保存问卷；ownerId 指向创建者；题目、选项和规则嵌入 questions |
-| responses | _id、surveyId、answers、path、submittedAt、anonymous、schemaVersion | 一份提交对应一个文档；surveyId 关联问卷 |
+| `users` | `_id`, `username`, `passwordHash`, `createdAt` | 用户信息，密码以 bcrypt 哈希保存 |
+| `sessions` | `_id`, `userId`, `expiresAt` | 登录会话，令牌哈希作为文档 ID |
+| `surveys` | `_id`, `ownerId`, `title`, `status`, `questions`, `deadline`, `revision` | 问卷及题目配置 |
+| `responses` | `_id`, `surveyId`, `answers`, `path`, `submittedAt` | 每次提交的答卷 |
 
-**嵌入 questions：** 问卷创建、编辑、发布和填写时需要同时读取题目、选项及跳转规则。嵌入同一文档可一次取得完整定义，也便于对草稿整体更新。题目上限为 100 道，限制单份问卷的增长。
+**题目嵌入问卷。** 创建、编辑和填写问卷时，一般要同时取出题目、选项、限制条件和跳转规则，所以把它们放在 `surveys.questions` 数组中，一次读取即可取得整份问卷配置。题目在本系统中由创建者整体编辑，发布后不再允许修改。程序还设置了最多 100 道题的限制，以控制单份问卷文档大小。
 
-**独立 responses：** 同一问卷可能有大量提交。若把答卷嵌入 surveys，文档会随提交不断增长，容易触及单文档大小限制，并造成多名填写者争用同一文档。因此，每次填写插入一份独立的 response，可按 surveyId 检索和聚合。
+**答卷独立存储。** 一份问卷可能产生大量提交。如果把所有答卷都放进 `surveys`，同一文档会持续增大，多人填写时还会集中更新这个文档。因此每次提交向 `responses` 插入独立记录，再通过 `surveyId` 关联问卷。这样既便于多人提交，也便于按问卷统计。
 
-**独立 users、sessions：** 账号、会话过期与业务问卷的生命周期不同，不适合嵌入每份问卷。不同集合之间使用应用层 ID 关联，而非关系数据库外键。
+**用户与会话分开。** 用户账号长期存在，而会话有过期时间；拆分后可通过 TTL 索引清理过期会话，不必更新用户文档。账号与问卷、答卷之间使用 ID 引用。
 
-## 三、题目与答卷的表示
+## 2. 为什么不用关系数据库式结构
 
-业务题型只有三类：
+课程规定必须使用 MongoDB，不能使用关系数据库。本项目也没有照搬关系数据库“每个实体拆成一张表”的方式。
 
-| 题型 | 存储表示 | 主要约束 |
+如果按关系模型设计，通常会把问卷、题目、选项、跳转规则及提交答案分别拆表，用主键、外键和 JOIN 还原整份问卷。这种方式有成熟的完整性约束，在复杂关联查询中也有优势；并不是关系数据库无法实现问卷系统。
+
+但对于本项目，最常见的操作是**按 ID 读取一份完整问卷**。题目、选项和规则通常一起使用，若按多张关系表拆分，会增加关联查询及对象组装工作。MongoDB 的嵌入文档能够更直接地表示这组整体使用的数据。另一方面，答卷需要独立存放、不断增加，因此没有把所有数据塞进同一集合或同一个大文档。
+
+这种设计的代价是：题目数组适合整卷读写，不适合无限增长；MongoDB 不会自动维护 `ownerId`、`surveyId` 等字段的外键关系，关联合法性要由程序负责。因此这里选择的是**按访问方式决定嵌入或引用**，而不是把关系数据库简单替换成 MongoDB。
+
+## 3. 为什么适合 MongoDB
+
+本项目使用 MongoDB 的原因主要与数据形态和访问方式有关：
+
+1. **嵌入式文档。** 一份问卷包含不同题型、选项、校验条件和跳转规则，BSON 文档能把这组层次化数据放在一起。
+2. **不同题型的答案。** 单选保存一个选项 ID，多选保存 ID 数组，文本保存字符串，数字保存数值。答卷的 `answers` 对象可以按题目 ID 保存不同类型的值。
+3. **按问卷聚合。** 统计查询以 `surveyId` 为筛选条件，使用 MongoDB 的 `$match`、`$facet`、`$group`、`$sum` 和 `$avg` 计算结果。
+4. **索引和文档校验。** 使用唯一索引、TTL 索引及 JSON Schema 约束基础结构，业务规则由 Go 再校验。
+
+这些优点也有边界：跨集合的强引用完整性需要应用层维护；若未来要进行大量跨问卷、多维关联分析，可能要调整数据模型或统计方式。
+
+## 4. 题目和答卷结构
+
+系统对新问卷只提供三种题型：
+
+| 题型 | 数据表示 | 限制 |
 | --- | --- | --- |
-| 单选 | type=single | 选项 ID、必填 |
-| 多选 | type=multiple | 选项 ID 数组、minSelect、maxSelect |
-| 填空 | type=fill，fillType=text/number | 文本 minLength/maxLength；数字 min/max/integer |
+| 单选 | `type: "single"` | 有效选项、是否必答 |
+| 多选 | `type: "multiple"` | 有效选项、最少和最多选择数量 |
+| 填空 | `type: "fill"`，`fillType: "text"` 或 `"number"` | 文本长度；数字上下限和整数要求 |
 
-新建问卷的简化示例（省略说明字段、时间及其他可选属性）：
+问卷中的一条题目配置示例（仅展示相关字段，不是可直接插入的完整问卷）：
 
 ~~~json
 {
-  "_id": "survey_001",
-  "ownerId": "user_001",
-  "schemaVersion": 1,
-  "revision": 1,
-  "title": "课程反馈",
-  "status": "published",
-  "allowAnonymous": true,
-  "allowRepeat": false,
-  "questions": [
-    {
-      "id": "q1", "title": "是否继续填写？",
-      "type": "single", "required": true,
-      "options": [
-        {"id": "yes", "label": "是"},
-        {"id": "no", "label": "否"}
-      ],
-      "validation": {"integer": false},
-      "rules": [{"operator": "eq", "value": "no", "target": "END"}]
-    },
-    {
-      "id": "q2", "title": "年龄",
-      "type": "fill", "fillType": "number", "required": true,
-      "options": [],
-      "validation": {"min": 0, "max": 120, "integer": true},
-      "rules": []
-    }
+  "id": "q1",
+  "title": "是否继续填写？",
+  "type": "single",
+  "required": true,
+  "options": [
+    {"id": "yes", "label": "是"},
+    {"id": "no", "label": "否"}
+  ],
+  "validation": {"integer": false},
+  "rules": [
+    {"operator": "eq", "value": "no", "target": "END"}
   ]
 }
 ~~~
 
-选“否”时路径只有 q1；选“是”时默认继续回答 q2。提交后的答卷包含：
+每条规则包含判断操作符 `operator`、比较值 `value` 和跳转目标 `target`。目标为后续题目的 ID 或 `END`。
+
+一份简化的答卷示例：
 
 ~~~json
 {
   "_id": "response_001",
   "surveyId": "survey_001",
-  "schemaVersion": 1,
   "anonymous": true,
   "answers": {"q1": "yes", "q2": 21},
-  "path": ["q1", "q2"],
-  "submittedAt": "2026-10-17T08:00:00Z"
+  "path": ["q1", "q2"]
 }
 ~~~
 
-示例中时间以 JSON 字符串展示；真正写入 MongoDB 时使用 BSON Date。匿名答卷不保存 userId。禁止重复提交时，数据库另存由问卷 ID 和登录用户 ID 生成的 dedupeKey，借助唯一索引判断同一账号是否已提交。
+实际存储还包含 `schemaVersion` 和 BSON Date 类型的 `submittedAt` 等字段。这里的 `answers` 按题目 ID 存储；`path` 是服务端根据规则计算的实际作答顺序，而不是浏览器指定的可信结果。
 
-## 四、MongoDB Schema 与索引
+历史测试样例中，填空题曾使用 `type: "text"`、`type: "number"`。现有代码保留了对这些旧数据的读取和校验能力，新创建的题目统一使用 `fill + fillType`。
 
-实现位置：**internal/store/mongo.go** 中的 collectionSchemas()、Init()。
+## 5. 索引与数据约束
 
-初始化建立四个集合的 MongoDB JSON Schema 校验器，对 BSON 类型、必要字段、问卷状态、题型枚举、数据版本等做基础约束。主要约束如下：
+数据库创建和索引初始化位于 `internal/store/mongo.go` 的 `Init()`；MongoDB JSON Schema 位于 `collectionSchemas()`。
 
-| 对象 | MongoDB 层约束 | 后端继续检查 |
+| 集合 | 索引 | 作用 |
 | --- | --- | --- |
-| users | 用户名、密码哈希、创建时间字段类型 | 注册格式、密码长度、bcrypt 校验 |
-| surveys | 必需字段、状态枚举、questions 数组及题型结构 | 标题、选项唯一性、题目数量、跳转目标及约束 |
-| responses | surveyId、answers、path、时间等字段类型 | 填写者权限、问卷状态、实际作答路径、答案类型与范围 |
-| sessions | userId 和 expiresAt 等字段类型 | 会话是否已经过期 |
+| `users` | `username` 唯一 | 不允许重复用户名 |
+| `sessions` | `expiresAt` TTL | 过期会话清理 |
+| `surveys` | `ownerId, createdAt` | 查询并排序某用户创建的问卷 |
+| `responses` | `surveyId, submittedAt, _id` | 按问卷检索、稳定分页 |
+| `responses` | `surveyId, dedupeKey` 部分唯一 | 禁止重复填写时进行数据库级去重 |
 
-注意：MongoDB Schema 并没有验证所有跨字段业务条件。例如“fill 必须有 fillType”“跳转只能指向后续题目”由 Go 的 ValidateSurvey() 完成。这是**数据库基础约束 + 应用层语义校验**的分工，不应声称数据库 Schema 已涵盖全部规则。
+JSON Schema 检查基本字段是否存在、BSON 类型及部分枚举值。例如问卷状态仅允许 `draft`、`published`、`closed`；题型字段接受新表示和历史兼容表示。
 
-| 集合 | 索引 | 服务的操作 |
-| --- | --- | --- |
-| users | username 唯一 | 防止重复用户名 |
-| sessions | expiresAt TTL | 清理过期会话；读取时仍检查是否过期 |
-| surveys | ownerId、createdAt（降序） | 查询某用户创建的问卷 |
-| responses | surveyId、submittedAt、_id | 按问卷查找和稳定分页原始答案 |
-| responses | surveyId、dedupeKey 部分唯一 | 不允许重复填写时的并发去重 |
+MongoDB Schema **不能代替业务规则**：选项 ID 是否重复、跳转目标是否在后续题目、多选数量限制是否合理等，由 `internal/domain/logic.go` 中的 `ValidateSurvey()` 和 `ValidateAnswer()` 检查。对于禁止重复提交的问卷，后端根据问卷和账号生成 `dedupeKey`，并通过唯一索引防止两个并发请求重复插入。
 
-在 MongoDB 中，题目数组是主要的嵌入结构；答卷通过 surveyId 建立引用关系。相较于将问卷、题目、选项、跳转规则拆成多张关系表，这更接近“整卷读取、整卷编辑”的访问方式。代价是题目作为整体更新，不适合无限增长或高度独立地修改每道题。
+## 6. 主要数据操作
 
-## 五、创建、发布和填写的数据流
+**创建与发布。** 注册用户创建 `draft` 问卷；草稿更新使用 `revision` 作为乐观锁，防止旧版本覆盖新内容。发布时再次检查题目配置、截止时间及问卷是否为空。
 
-1. **创建：** 注册用户调用 POST /api/surveys；存储层为 surveys 插入 draft 文档。
-2. **编辑：** PUT /api/surveys/{id}。后端先运行 ValidateSurvey()，再用 _id、ownerId、status=draft 和 revision 作为更新条件；并发修改造成版本变化时返回 409。
-3. **发布：** 检查非空题目、规则结构和截止时间，将状态从 draft 改为 published。已发布的题目和规则不能再编辑。
-4. **填写：** GET /api/public/surveys/{id} 获取公开问卷。POST /next 对当前答案校验并计算下一题；服务端不依赖页面自己决定路径。
-5. **提交：** POST /responses 执行 ValidateSubmission()，从第一题重新推导路径，检查每道实际经过的题、拒绝携带跳过题的答案，最后将 response 插入 MongoDB。
-6. **关闭：** 将状态改为 closed，新的正常提交不再被接受；历史 responses 保留供统计使用。
+**条件跳转。** `NextQuestion()` 按规则顺序查找第一条命中条件；没有命中就进入下一题。规则只允许跳向后面的题目或 `END`，不允许循环。最终提交时，`ValidateSubmission()` 从第一题重新计算路径，检查经过的每道题并拒绝携带被跳过题目的答案。
 
-## 六、条件跳转的保存与执行
+**保存与匿名。** 填写者必须登录。问卷允许匿名时，提交记录可以不写 `userId`；禁止重复提交时仍有基于账号计算的 `dedupeKey`，因此匿名不能理解为数据库层面完全不可关联。
 
-规则保存在 surveys.questions[].rules，每条包含 operator、value 和 target。支持：
+**统计。** `Stats()` 先按 `surveyId` 筛选记录，再对单选、多选计算选项次数，对数字填空计算平均值。原始文本和数字填写内容由 `answerValues()` 按页读取，避免把所有长文本放进一份聚合结果。统计计数对应**提交记录数**，允许重复提交时不能视作去重人数。
 
-| 题型 | operator | value |
-| --- | --- | --- |
-| 单选 | eq | 一个选项 ID |
-| 多选 | contains、contains_all | 一个选项 ID 或选项 ID 数组 |
-| 数字填空 | eq、gt、gte、lt、lte | 数值 |
+## 7. 当前设计的范围
 
-执行顺序是：先校验当前答案，再依次查规则；第一条命中的规则确定下一题；没有命中时继续下一题。target 只能是后续题目 ID 或 END，不允许回跳形成循环。真正的路径计算位于 **internal/domain/logic.go** 的 NextQuestion()；最终提交由 ValidateSubmission() 再计算一遍，而非接受浏览器传回的作答路径。
+第一阶段代码保留了稳定题目 ID、`revision`、`schemaVersion` 和历史答卷测试样例，供第二阶段在原系统上修改。现在没有实现通用自动迁移程序，也没有预先实现尚未公布的第二阶段需求。
 
-## 七、答案校验与重复提交
-
-- 单选：答案属于已有选项；必答题不可为空。
-- 多选：答案必须是选项数组、不能重复，满足最少/最多选择数和必答条件。
-- 文本填空：校验字符长度、必答；使用 Unicode 字符计数。
-- 数字填空：校验有限数值、上下限以及整数要求。
-- 题目配置本身：检查选项、规则合法性，并拒绝“必答但无任何合法答案”的配置。
-
-业务校验在 **internal/domain/logic.go** 中实现。页面上的即时错误提示只是交互帮助；保存最终以服务端为准。
-
-重复提交由 MongoDB 的部分唯一索引控制，而不是先查询“是否存在”，从而避免两个并发请求都查到“尚未填写”后重复写入的竞态。不同账号的提交可作为独立文档写入。
-
-## 八、统计为什么由 MongoDB 完成
-
-实现位置：**internal/store/mongo.go** 的 Stats() 和 answerValues()。
-
-- 首先按 surveyId 使用 $match 筛出该问卷的 responses。
-- 通过 $facet 分别统计提交总数和每道题的回答份数。
-- 使用 $group / $sum 统计选择次数；数字填空使用 $avg 计算平均值。
-- 文本或数字的原始内容单独按 submittedAt、_id 排序分页获取，不把全部原始答案塞进单个聚合结果。
-- 接口可以返回整卷统计，也可以传 questionId 查看指定题目的统计。
-
-统计口径必须说明：totalResponses 是**提交记录数**；answered 是该题有答案的**提交份数**。允许重复提交时，不能把两者写成“去重的参与人数”。被跳过的题目不计作答。
+当前的关闭问卷操作与已经开始处理的并发提交并非严格的单个事务边界；统计汇总与原始答案分页也不保证同一时点的快照。这些是当前课程规模实现的已知限制。
