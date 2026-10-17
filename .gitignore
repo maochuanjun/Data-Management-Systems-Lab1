@@ -13,7 +13,5 @@ docs/
 *.test
 *.log
 .vscode/
-__pycache__/
-*.pyc
 .aws/
 node_modules/
