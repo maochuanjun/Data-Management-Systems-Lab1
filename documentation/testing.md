@@ -23,11 +23,10 @@ UI 相关辅助功能及环境启动脚本的测试不作为课程核心验收�
 
 ## 二、执行方式
 
-先根据 .env.example 配置 .env，并启动可连接的 MongoDB：
+先启动 MongoDB。默认连接 Docker Compose 映射到本机 27018 端口的实例；其他地址用 `MONGO_URI` 或 `INTEGRATION_MONGO_URI` 环境变量覆盖：
 
 ~~~sh
 docker compose up -d
-cp .env.example .env
 ~~~
 
 执行快速测试（Go 业务逻辑和 Node.js 前端回归）：
@@ -39,22 +38,24 @@ make test
 执行包含真实 MongoDB 的集成测试：
 
 ~~~sh
-python3 scripts/with-local-mongo.py make integration
+make integration
 ~~~
 
 如果已经安装 Playwright 和 Chromium，可以再执行浏览器测试：
 
 ~~~sh
-python3 scripts/with-local-mongo.py make e2e
+npm install
+npx playwright install chromium
+make e2e
 ~~~
 
 完整补充检查：
 
 ~~~sh
-python3 scripts/with-local-mongo.py make verify
+make verify
 ~~~
 
-**环境约束：** go.mod 要求 Go 1.26.0；integration 和 e2e 需要 MongoDB；前端回归需要 Node.js；浏览器验收另外需要 Playwright/Chromium。缺少这些工具时，应注明“未执行及原因”，而不是以静态代码检查代替运行结果。
+**环境约束：** go.mod 要求 Go 1.26.0；integration 和 e2e 需要 MongoDB；前端回归需要 Node.js；浏览器验收另外需要 Playwright/Chromium。Makefile 直接执行 Go/Node 命令，不再需要 Python。`.env` 不会被自动加载；若使用该文件，请先在 shell 中导出其中的变量（参见根目录 README）。缺少这些工具时，应注明“未执行及原因”，而不是以静态代码检查代替运行结果。
 
 ## 三、验收结果填写
 
