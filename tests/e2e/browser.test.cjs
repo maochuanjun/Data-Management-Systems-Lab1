@@ -1,8 +1,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 const {test} = require("node:test");
-// Reuse an installed test tool; no browser dependency is added to the service.
-const {chromium} = require(process.env.PLAYWRIGHT_MODULE || "playwright");
+// Playwright is used only for optional browser acceptance tests.
+const {chromium} = require("playwright");
 const baseURL = process.env.E2E_BASE_URL;
 
 async function register(page, name) {
