@@ -2,18 +2,18 @@
 
 依据《大作业一》“至少六类测试”的要求，分别列出**步骤、输入、预期输出和结果**。自动化用例主要位于 tests/unit、tests/integration；界面测试位于 tests/frontend、tests/e2e。
 
-**执行结果说明：** 当前整理工作能够检查仓库中的测试代码，但没有获得这次改动之后的 Go 1.26、MongoDB 和 Chromium 实测日志。下表的“未复测”是当前事实，不等于测试失败，更不应擅自改成“通过”。完成验收后按真实输出更新该列。
+**执行结果说明：** 2026-10-17，提交者已在 `coursework/remove-python-launchers-20261017` 分支运行 `make test`、`make integration` 和 `make verify`，并提供完整终端输出。Go 单元测试、31 项 JavaScript 前端测试及 MongoDB 集成测试均通过，`go vet` 和构建通过。以下六类用例具有对应自动化测试代码；测试包整体通过，但终端未逐一打印全部测试步骤的输入/响应详情。可选 Chromium E2E 尚未执行。
 
 ## 一、六类课程必需测试
 
 | 编号与功能 | 步骤 | 代表输入 | 预期输出 | 本次结果 | 对应代码 |
 | --- | --- | --- | --- | --- | --- |
-| T01 创建问卷 | A 注册并登录 → POST /api/surveys → GET /api/surveys；B 登录后尝试访问 A 的问卷 | title=课程反馈、questions=[] | 创建 201、状态 draft、列表出现；B 不能读取 A 的私有问卷 | 未复测 | tests/integration/http_test.go |
-| T02 添加题目 | A 在草稿中添加题目 → PUT 保存 → GET 读取；用旧 revision 再次保存 | 单选、多选、fill/text、fill/number；当前 revision | 合法题目持久化；保存 200；旧 revision 返回 409 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
-| T03 条件跳转 | 设置规则并发布 → POST /next；分别给出命中、不命中的答案；尝试提交跳过题答案 | 单选 eq、多选 contains_all、数字填空 gte；target=后续题/END | 返回正确 nextQuestionId；未命中进入下一题；伪造路径被 400 拒绝 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
-| T04 答案校验 | 发布带约束的问卷 → 用非法值调用 /next 或 /responses → 改为合法值 | 必答题空值、多选少于下限、文本过长、年龄 121；合法年龄 21 | 非法答案 400；符合题型及范围时继续或提交成功 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
-| T05 提交问卷 | B 登录 → POST /responses → 相同账号再次提交 → 检查 MongoDB 记录 | allowAnonymous=true、allowRepeat=false、anonymous=true、合法 answers | 首次 201；同账号再次提交 409；只保存一份答卷，匿名答卷不含 userId | 未复测 | tests/integration/http_test.go |
-| T06 查询统计 | 多个账号提交已知答案 → A 查询整卷统计和指定题目统计 → 翻页查看填空 | 单选与多选不同选项、若干数字及文本答案 | totalResponses、answered、选项 count、数字 average 与原始 values 正确；分页范围正确 | 未复测 | tests/integration/mongo_test.go；tests/integration/http_test.go |
+| T01 创建问卷 | A 注册并登录 → POST /api/surveys → GET /api/surveys；B 登录后尝试访问 A 的问卷 | title=课程反馈、questions=[] | 创建 201、状态 draft、列表出现；B 不能读取 A 的私有问卷 | 对应自动化测试通过（测试包整体通过） | tests/integration/http_test.go |
+| T02 添加题目 | A 在草稿中添加题目 → PUT 保存 → GET 读取；用旧 revision 再次保存 | 单选、多选、fill/text、fill/number；当前 revision | 合法题目持久化；保存 200；旧 revision 返回 409 | 对应自动化测试通过（测试包整体通过） | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T03 条件跳转 | 设置规则并发布 → POST /next；分别给出命中、不命中的答案；尝试提交跳过题答案 | 单选 eq、多选 contains_all、数字填空 gte；target=后续题/END | 返回正确 nextQuestionId；未命中进入下一题；伪造路径被 400 拒绝 | 对应自动化测试通过（测试包整体通过） | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T04 答案校验 | 发布带约束的问卷 → 用非法值调用 /next 或 /responses → 改为合法值 | 必答题空值、多选少于下限、文本过长、年龄 121；合法年龄 21 | 非法答案 400；符合题型及范围时继续或提交成功 | 对应自动化测试通过（测试包整体通过） | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T05 提交问卷 | B 登录 → POST /responses → 相同账号再次提交 → 检查 MongoDB 记录 | allowAnonymous=true、allowRepeat=false、anonymous=true、合法 answers | 首次 201；同账号再次提交 409；只保存一份答卷，匿名答卷不含 userId | 对应自动化测试通过（测试包整体通过） | tests/integration/http_test.go |
+| T06 查询统计 | 多个账号提交已知答案 → A 查询整卷统计和指定题目统计 → 翻页查看填空 | 单选与多选不同选项、若干数字及文本答案 | totalResponses、answered、选项 count、数字 average 与原始 values 正确；分页范围正确 | 对应自动化测试通过（测试包整体通过） | tests/integration/mongo_test.go；tests/integration/http_test.go |
 
 ### 建议保留的补充边界测试
 
@@ -47,33 +47,32 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 
 **环境要求：** Go 1.26+、Make；默认数据库模式还需 Docker Compose；`make test` 的前端部分需 Node.js；`make e2e` 另外需 Playwright/Chromium。默认连接与服务参数写在 Makefile 中，不需要 Python 或额外的环境模板文件。数据库连接失败应检查 `docker compose ps`、`docker compose logs mongodb` 和自定义连接地址。
 
-## 三、2026-10-17 本机日志及后续修复
+## 三、数据库连接故障与修复
 
-依据提交者提供的终端记录，在“启动脚本去 Python 化”之后，曾得到以下真实结果：
+2026-10-17 初次执行集成测试时，MongoDB 地址 `127.0.0.1:27018` 无服务监听，出现 `connect: connection refused`。当时 7 个集成用例无法连接数据库，产生的 34.3% 部分覆盖率无效。该错误不是已经验证的问卷逻辑缺陷。
 
-| 命令 / 项目 | 已有终端记录 | 解释 |
+处理方式：Makefile 在默认本地模式下自动启动并等待 MongoDB 容器健康；`tests/support/mongo.go` 增加快速连接预检；失败时清理不完整的 `coverage.out`。保留使用自定义 MongoDB URI 的方式。
+
+## 四、2026-10-17 修复后实际验收
+
+以下全部来自提交者在课程项目本机执行、粘贴于对话的终端日志，而不是 AI 自行运行的结果。
+
+| 实际操作 | 终端结果 | 结论 |
 | --- | --- | --- |
-| `go test -count=1 ./tests/unit` | 通过 | Go 单元测试执行成功 |
-| `node --test tests/frontend/frontend.test.cjs` | **31/31 通过** | 前端测试执行成功 |
-| `make integration` | 未通过 | 7 个 MongoDB 测试尝试连接 `127.0.0.1:27018` 时被拒绝，没有进入业务断言 |
-| `make verify` | 在集成测试阶段中止 | 与上一条相同；后面的静态检查和构建没有在这次命令中执行 |
-| `coverage.out`（当时 34.3%） | **不能作为有效覆盖率** | MongoDB 测试没有成功执行，统计不完整 |
+| `make test` — Go 单元测试 | `ok questionnaire/tests/unit` | 通过 |
+| `make test` — JavaScript 前端测试 | `tests 31; pass 31; fail 0` | **31/31 通过** |
+| `make integration` — MongoDB 健康检查 | `Container ...mongodb-1 Healthy` | 通过 |
+| `make integration` — Go 单元与集成测试 | 两个测试包均为 `ok`；集成包用时约 17.4 秒 | 通过 |
+| `make verify` — 核心测试复跑 | 前端 31/31，Go 单元及 MongoDB 集成包均为 `ok` | 通过 |
+| `make verify` — `go vet ./...` | 正常执行，无错误输出 | 通过 |
+| `make verify` — `go build -o bin/survey-lab ./cmd/server` | 正常结束，无报错 | 通过 |
+| `go tool cover -func=coverage.out \| tail -n 1` | `total: (statements) 85.7%` | **核心后端包合并语句覆盖率 85.7%** |
+| `make e2e` | 此次日志中没有执行 | **未验证** |
 
-根因是旧 Makefile 仅提供默认 MongoDB URI，没有负责启动数据库。修复后，使用默认 URI 的 `make run`、`make integration`、`make e2e` 会先通过 Docker Compose 启动并等待 MongoDB 健康；对自定义数据库则跳过 Compose。测试支持代码增加了简短的连接预检，避免连续长时间等待，并且仅在集成测试成功时保留完整覆盖率文件。
+**覆盖率说明：** 日志中的 33.2% 和 80.4% 分别是单元测试包与集成测试包执行时显示的覆盖比例，不能相加；由同一 `coverage.out` 汇总工具给出的 85.7% 是本次应引用的最终合并语句覆盖率。该百分比说明执行路径覆盖，不等于全部需求或业务边界已被证明正确。
 
-**以上并不是修复后的测试通过记录。** 本次修改后的真实 MongoDB 集成结果、Chromium 验收和覆盖率仍需重新执行并填写；未执行的用例不得改写为“通过”。
+**六类必需测试的结果判定：** T01～T06 的相关单元与集成测试代码均在已通过的测试包中，故上表记为对应自动化测试通过。由于运行命令未使用 `go test -v`，终端不会逐项打印 T01～T06 的详细请求和实际响应；用例表保留“步骤、代表输入、预期输出”，不伪造独立运行截图或逐步输出。
 
-## 四、最终验收记录（提交前填写）
+## 五、仍需补充的课程展示材料
 
-| 项目 | 当前状态 |
-| --- | --- |
-| 修复版执行日期与 Go/MongoDB 版本 | 待记录 |
-| 修复版 `make test` | 待复测 |
-| 修复版 `make integration` | 待复测 |
-| 修复版 `make verify` | 待复测 |
-| 可选 `make e2e` | 待复测 |
-| T01～T06 的真实输入与输出 | 待核对 |
-| 问卷创建、跳转、提交、统计页面截图 | 待添加 |
-| 最终覆盖率 | 仅在集成测试全部通过后记录 |
-
-此前 2026-10-16 的历史通过记录发生在部分题型调整前，不应冒充当前代码的复测结果。请保存本次执行终端输出，按实际情况填写以上字段。
+目前无需再将 MongoDB 集成测试记为“未复测”。如准备提交课程作业，建议保存这份真实终端日志，以及创建、题目编辑、条件跳转、错误输入、提交和统计页面的操作截图。若需要单独证明浏览器的完整流程，再安装 Playwright/Chromium 并运行 `make e2e`，把结果补录到本文。浏览器验收未执行时不得填“通过”。
