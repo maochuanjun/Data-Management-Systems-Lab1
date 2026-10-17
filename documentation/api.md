@@ -128,4 +128,4 @@
 | POST | /api/surveys/{id}/restore | 恢复归档 |
 | POST | /api/surveys/{id}/reopen | 重新开启已关闭问卷 |
 
-reopen 可以提交空对象以沿用未过期的截止时间，或以 deadline:null 取消截止时间。以上功能保留原有答卷数据；课程验收应先覆盖前三节核心接口。
+reopen 可以提交空对象以沿用未过期的截止时间，或以 deadline:null 取消截止时间。

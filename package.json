@@ -1,0 +1,8 @@
+{
+  "name": "questionnaire-coursework-tests",
+  "private": true,
+  "description": "仅用于可选的 Chromium 浏览器验收；Go 服务不依赖 Node.js 包",
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

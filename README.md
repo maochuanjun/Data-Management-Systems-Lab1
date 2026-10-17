@@ -21,20 +21,18 @@
 
 ## 二、运行
 
-环境：Go 1.26 或更新版本、MongoDB（示例使用 Docker Compose），本地启动命令还需要 Python 3。
+需要 Go 1.26+、MongoDB（示例使用 Docker Compose）和 Make。默认的 MongoDB 连接信息、数据库名、监听地址及端口均在根目录 **Makefile** 中定义。
 
 ~~~sh
-docker compose up -d
-cp .env.example .env
 make run
 ~~~
 
-打开 http://127.0.0.1:8080 。
+`make run` 会先通过 Docker Compose 启动并等待 MongoDB 健康检查通过，然后直接运行 Go 服务。浏览器访问 <http://127.0.0.1:8080> 。
 
-- 示例配置使用本机 **27018** 端口连接 MongoDB；如使用已有 MongoDB，请调整 .env 中的 MONGO_URI。
-- make run 通过项目脚本读取 .env；直接执行 go run ./cmd/server 时，需自行设置环境变量。
-- 分享链接形如 /survey/{id}。填写者仍需登录；“匿名”表示答卷不直接保存用户 ID，不表示免登录。
-- 通过其他设备访问时，请自行调整监听地址和网络可访问性。本项目未提供公网部署。
+- 默认 MongoDB 地址为 `127.0.0.1:27018`，数据库名为 `questionnaire_lab1`；容器由 `compose.yaml` 定义，数据存放在 Docker 命名卷中。
+- 已有独立 MongoDB 时无需 Docker：用 `MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run` 指定地址即可（自定义 URI 时不会自动启动 Compose）。
+- Makefile 还支持 `LISTEN_ADDR`、`PORT`、`COOKIE_SECURE` 和仅用于测试的 `INTEGRATION_MONGO_URI` 参数。
+- 分享链接形如 `/survey/{id}`；填写者须先登录，匿名提交仅表示答卷不直接保存用户 ID。
 
 ## 三、演示顺序
 
@@ -44,22 +42,23 @@ make run
 4. 用账号 A 查看各选项次数、回答份数、数字平均值及填空内容；再演示禁止重复提交。
 5. 关闭问卷，检查新的提交被拒绝。
 
-页面中还保留少量已实现的辅助管理操作；这些操作不是作业核心要求。
-
 ## 四、测试
 
 ~~~sh
-make test                                      # Go 业务逻辑与前端测试（不依赖 MongoDB）
-python3 scripts/with-local-mongo.py make integration   # 真实 MongoDB 集成测试
+make test          # Go 单元测试 + JavaScript 前端测试（不需要 MongoDB）
+make integration   # 自动启动 MongoDB，执行真实数据库集成测试
+make verify        # 核心测试 + 静态检查 + 构建（不含可选浏览器测试）
 ~~~
 
-浏览器端到端测试是补充验收，需要预装 Node.js、Playwright 和 Chromium：
+浏览器端到端测试首次执行需要安装 Node.js 开发依赖和 Chromium：
 
 ~~~sh
-python3 scripts/with-local-mongo.py make e2e
+npm install
+npx playwright install chromium
+make e2e
 ~~~
 
-测试用例的**步骤、输入、预期输出、实际结果填写位置**见 [测试说明](documentation/testing.md)。仓库中原有的历史测试通过记录不等于这份最终代码已经复测；正式提交请运行测试并保存真实输出。
+`make integration` 默认会先启动并等待 Docker Compose 中的 MongoDB；指定不同的 `INTEGRATION_MONGO_URI` 时则连接已有数据库，不启动 Compose。集成测试创建和清理独立随机测试库，不会清空正常问卷数据。
 
 ## 五、代码与提交材料
 
@@ -70,10 +69,7 @@ python3 scripts/with-local-mongo.py make e2e
 | internal/store/ | MongoDB Schema、索引、CRUD 和聚合统计 |
 | internal/web/ | HTTP 接口、会话与前端页面 |
 | tests/ | 课程六类测试及补充回归 |
-| [项目完成报告](项目完成报告.md) | 按课程评分重点整理的第一阶段报告 |
 | [MongoDB 设计说明](documentation/design.md) | 集合、嵌入与引用、索引、统计、业务约束 |
 | [API 说明](documentation/api.md) | 请求方式、参数及返回结果 |
 | [测试说明](documentation/testing.md) | 六类用例与复测记录 |
 | [AI 使用记录](documentation/ai-log.md) | 真实提示词摘录、代码产物、问题及修改 |
-
-第二阶段的新需求尚未确定。现阶段保留既有数据和代码结构，不预先实现未经发布的第二阶段功能。

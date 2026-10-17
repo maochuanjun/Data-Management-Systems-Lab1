@@ -6,14 +6,11 @@
 docs/
 .env
 *.env
-!.env.example
 *:Zone.Identifier
 /bin/
 /coverage.out
 *.test
 *.log
 .vscode/
-__pycache__/
-*.pyc
 .aws/
 node_modules/
