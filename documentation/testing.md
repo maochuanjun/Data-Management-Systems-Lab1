@@ -1,64 +1,72 @@
-# 测试用例与验收记录（第一阶段）
+# 测试用例与执行记录（第一阶段）
 
-本文件按作业要求记录测试步骤、输入、预期输出与结果。自动化代码保存在 `tests/unit/`、`tests/integration/`、`tests/frontend/` 和 `tests/e2e/`；`tests/fixtures/v1/` 保存供第二阶段兼容性回归使用的固定数据。
+依据《大作业一》“至少六类测试”的要求，分别列出**步骤、输入、预期输出和结果**。自动化用例主要位于 tests/unit、tests/integration；界面测试位于 tests/frontend、tests/e2e。
 
-## 一、六类必需测试
+**执行结果说明：** 当前整理工作能够检查仓库中的测试代码，但没有获得这次改动之后的 Go 1.26、MongoDB 和 Chromium 实测日志。下表的“未复测”是当前事实，不等于测试失败，更不应擅自改成“通过”。完成验收后按真实输出更新该列。
 
-下表“历史结果”指此前 2026-10-16 开发者在本地环境执行的记录；本轮题型结构调整新增了测试用例，但尚未重新执行真实数据库及浏览器测试。
+## 一、六类课程必需测试
 
-| 编号 | 测试步骤 | 输入 | 预期输出 | 历史结果 |
-| --- | --- | --- | --- | --- |
-| T01 创建问卷 | 注册并登录 A → 新建草稿 → 查询我的问卷 | 标题“课程反馈”、空题目数组 | 创建 `201`、状态 `draft`；A 能看到该问卷，B 不能查看 | 通过（HTTP 集成） |
-| T02 添加题目 | 给草稿添加三类题型，分别设置文本和数字填空 → 保存 → 再次读取 | 单选、多选、`fill/text`、`fill/number` 及选项、规则 | 保存 `200`，题目与配置正确；旧 `revision` 保存返回 `409` | 通过（单元/集成/E2E） |
-| T03 条件跳转 | 设置跳转规则并按不同答案填写 | 单选 `eq`、多选 `contains_all`、数字 `gte`，目标为后续题或 `END` | 命中规则时跳转；未命中顺序进入下一题；跳过题答案不能伪造提交 | 通过（单元/集成/E2E） |
-| T04 输入校验 | 输入非法值，再改为合法值 | 必答空值、少选、多选、超长文字、整数年龄 121/21 | 非法答案返回 `400`；合法答案正常进入下一题并提交 | 通过（单元/集成/E2E） |
-| T05 提交问卷 | 账号 B 提交，再用同账号提交 | `anonymous=true`、`allowRepeat=false`、合法答案 | 首次 `201` 且保存；第二次 `409`；匿名答卷无 `userId` | 通过（集成/E2E） |
-| T06 统计 | 创建者查看整卷及单题统计 | 已知单选、多选和数字答案，含文本内容 | 选项次数、回答份数、平均值正确；原始答案可分页查看 | 通过（MongoDB/HTTP/E2E） |
+| 编号与功能 | 步骤 | 代表输入 | 预期输出 | 本次结果 | 对应代码 |
+| --- | --- | --- | --- | --- | --- |
+| T01 创建问卷 | A 注册并登录 → POST /api/surveys → GET /api/surveys；B 登录后尝试访问 A 的问卷 | title=课程反馈、questions=[] | 创建 201、状态 draft、列表出现；B 不能读取 A 的私有问卷 | 未复测 | tests/integration/http_test.go |
+| T02 添加题目 | A 在草稿中添加题目 → PUT 保存 → GET 读取；用旧 revision 再次保存 | 单选、多选、fill/text、fill/number；当前 revision | 合法题目持久化；保存 200；旧 revision 返回 409 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T03 条件跳转 | 设置规则并发布 → POST /next；分别给出命中、不命中的答案；尝试提交跳过题答案 | 单选 eq、多选 contains_all、数字填空 gte；target=后续题/END | 返回正确 nextQuestionId；未命中进入下一题；伪造路径被 400 拒绝 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T04 答案校验 | 发布带约束的问卷 → 用非法值调用 /next 或 /responses → 改为合法值 | 必答题空值、多选少于下限、文本过长、年龄 121；合法年龄 21 | 非法答案 400；符合题型及范围时继续或提交成功 | 未复测 | tests/unit/domain_test.go；tests/integration/http_test.go |
+| T05 提交问卷 | B 登录 → POST /responses → 相同账号再次提交 → 检查 MongoDB 记录 | allowAnonymous=true、allowRepeat=false、anonymous=true、合法 answers | 首次 201；同账号再次提交 409；只保存一份答卷，匿名答卷不含 userId | 未复测 | tests/integration/http_test.go |
+| T06 查询统计 | 多个账号提交已知答案 → A 查询整卷统计和指定题目统计 → 翻页查看填空 | 单选与多选不同选项、若干数字及文本答案 | totalResponses、answered、选项 count、数字 average 与原始 values 正确；分页范围正确 | 未复测 | tests/integration/mongo_test.go；tests/integration/http_test.go |
 
-## 二、补充测试
+### 建议保留的补充边界测试
 
-- **权限**：B 读取 A 的私有问卷或统计，预期 `404`。
-- **并发提交**：禁止重复时同一账号并发提交，预期仅一份成功；不同账号同时提交应都能保存。
-- **问卷生命周期**：关闭、归档、恢复、重新开启后检查是否可提交，以及原答卷和统计是否保留。
-- **题型兼容**：新问卷 `fill/text`、`fill/number` 的校验、数字跳转和平均值正确；旧问卷 `type=text/number` 仍能读取、填写和统计。
-- **边界与回归**：不可能完成的必答题应在保存/发布时拒绝；特殊 ID（如 `__proto__`）能提交；长文本统计可分页；v1 固定文档可正常读取。
+权限隔离、同账号并发去重、不同账号并发提交、截止时间、规则非法目标、旧版 type=text/number 数据兼容。这些边界直接服务于后端正确性和第二阶段的旧功能保留要求。
 
-上述补充用例有对应自动化测试代码。额外测试是对课程要求的验证，不作为新功能清单。
+UI 相关辅助功能及环境启动脚本的测试不作为课程核心验收内容；不需要在项目完成报告中逐项展示开发过程。
 
-## 三、运行命令
+## 二、执行方式
 
-在仓库根目录执行：
+先根据 .env.example 配置 .env，并启动可连接的 MongoDB：
 
 ~~~sh
-# 快速测试：Go 单元 + Python 配置 + Node 前端
+docker compose up -d
+cp .env.example .env
+~~~
+
+执行快速测试（Go 业务逻辑和 Node.js 前端回归）：
+
+~~~sh
 make test
+~~~
 
-# 真实数据库集成
+执行包含真实 MongoDB 的集成测试：
+
+~~~sh
 python3 scripts/with-local-mongo.py make integration
+~~~
 
-# Chromium 端到端测试（需要已有 Playwright 和 Chromium）
+如果已经安装 Playwright 和 Chromium，可以再执行浏览器测试：
+
+~~~sh
 python3 scripts/with-local-mongo.py make e2e
+~~~
 
-# 集成、浏览器测试、静态检查、构建
+完整补充检查：
+
+~~~sh
 python3 scripts/with-local-mongo.py make verify
 ~~~
 
-配置方式见根目录 `.env.example`。数据库测试使用隔离测试库；不要将生产数据用于测试。`make test` 不等价于真实 MongoDB 或浏览器验收。
+**环境约束：** go.mod 要求 Go 1.26.0；integration 和 e2e 需要 MongoDB；前端回归需要 Node.js；浏览器验收另外需要 Playwright/Chromium。缺少这些工具时，应注明“未执行及原因”，而不是以静态代码检查代替运行结果。
 
-## 四、历史执行结果与验证边界
+## 三、验收结果填写
 
-根据 2026-10-16 已有本地验收记录，上一版本执行 `make test` 和完整 `make verify` 后，结果如下：
+正式提交时，请将上一节 T01～T06 的“未复测”改为真实结果，并保留下列可核对信息：
 
-| 检查 | 已记录结果 |
+| 项目 | 本次记录 |
 | --- | --- |
-| Go 单元测试 | 通过 |
-| Python 配置测试 | 6/6 通过 |
-| Node 前端测试 | 27/27 通过 |
-| 真实 MongoDB 集成测试 | 通过，Go `-race` 未报告竞争 |
-| Chromium E2E | 6 个业务子场景通过（测试器统计 7/7，包含父测试） |
-| `go vet ./...` 与 Go 构建 | 通过 |
-| 核心包 `internal/...` 合并语句覆盖率 | 85.5% |
+| 执行日期及环境 | 尚未记录 |
+| make test | 未在本轮执行 |
+| MongoDB 集成测试 | 未在本轮执行 |
+| Chromium 端到端测试 | 未在本轮执行 |
+| 问卷创建、跳转、提交、统计页面截图 | 尚待实际运行后添加 |
+| 失败用例及修复后复测 | 以本次实际日志为准 |
 
-这些数字来自调整题型**之前**的开发者本地日志，并非本次修改后重新取得，也不是 GitHub CI 结果。提交前应在最终代码版本运行并留存终端结果；如果当前环境缺少数据库或 Playwright，应如实写“未执行”，不可沿用旧结果冒充复测。
-
-测试中曾发现浏览器用例在异步列表加载前就断言答案条数，以及规则下拉框无稳定可访问名称，修正等待条件和 `aria-label` 后均有重新通过的历史记录。完整过程可从 Git 提交历史查看。
+此前仓库文档记载过 **2026-10-16** 的本地测试通过情况，但部分记录早于最新题型结构变更。因此不将历史覆盖率、用例通过数量或旧浏览器记录写作本轮成果。若最终版本复测通过，应以最终提交对应的日期、命令与输出替换上述说明。
