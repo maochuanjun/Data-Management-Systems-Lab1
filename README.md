@@ -59,11 +59,13 @@ make verify        # 核心测试 + 静态检查 + 构建（不含可选浏览�
 npm install
 npx playwright install chromium
 make e2e
+
+# npm install 首次会生成 package-lock.json，建议与 package.json 一起提交版本管理
 ~~~
 
 `make integration` 默认会先启动并等待 Docker Compose 中的 MongoDB；指定不同的 `INTEGRATION_MONGO_URI` 时则连接已有数据库，不启动 Compose。集成测试创建和清理独立随机测试库，不会清空正常问卷数据。集成测试失败时不保留不完整的 `coverage.out`。
 
-**最新验收（2026-10-17，本机日志）：** `make test`、`make integration` 和 `make verify` 均通过；JavaScript 前端测试 31/31，通过率 100%；`coverage.out` 汇总的后端语句覆盖率为 **85.7%**。Chromium E2E 尚未执行。六类必需测试的步骤、输入、预期输出及实际结果说明见 [测试说明](documentation/testing.md)。
+**最新验收（2026-10-17，本机日志）：** `make test`、`make integration` 和 `make verify` 均通过；JavaScript 前端测试 31/31，通过率 100%；`coverage.out` 汇总的后端语句覆盖率为 **85.7%**。Chromium E2E 在安装 Playwright/Chromium 后 **7/7 通过**（包含父测试，实际为 6 个业务子场景）。六类必需测试的步骤、输入、预期输出及实际结果说明见 [测试说明](documentation/testing.md)。
 
 ## 五、代码与提交材料
 
