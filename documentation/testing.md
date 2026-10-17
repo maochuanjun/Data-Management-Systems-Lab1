@@ -23,25 +23,15 @@ UI 相关辅助功能及环境启动脚本的测试不作为课程核心验收�
 
 ## 二、执行方式
 
-先启动 MongoDB。默认连接 Docker Compose 映射到本机 27018 端口的实例；其他地址用 `MONGO_URI` 或 `INTEGRATION_MONGO_URI` 环境变量覆盖：
+项目的连接参数集中在根目录 Makefile。默认使用 `compose.yaml` 的 MongoDB（本机 27018 端口），执行 `make integration` 或 `make e2e` 时会自动启动并等待容器健康，不必预先手工启动数据库。
 
 ~~~sh
-docker compose up -d
+make test          # Go 单元测试 + JavaScript 前端测试，不需要 MongoDB
+make integration   # 自动启动默认 MongoDB，运行真实数据库集成测试
+make verify        # 核心测试、静态检查及构建；不包含可选 E2E
 ~~~
 
-执行快速测试（Go 业务逻辑和 Node.js 前端回归）：
-
-~~~sh
-make test
-~~~
-
-执行包含真实 MongoDB 的集成测试：
-
-~~~sh
-make integration
-~~~
-
-如果已经安装 Playwright 和 Chromium，可以再执行浏览器测试：
+浏览器端到端测试是可选补充，第一次运行前需安装 Node.js 开发依赖和 Chromium：
 
 ~~~sh
 npm install
@@ -49,25 +39,41 @@ npx playwright install chromium
 make e2e
 ~~~
 
-完整补充检查：
+如使用已有 MongoDB，可覆盖连接地址，避免自动启动 Docker：
 
 ~~~sh
-make verify
+INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 ~~~
 
-**环境约束：** go.mod 要求 Go 1.26.0；integration 和 e2e 需要 MongoDB；前端回归需要 Node.js；浏览器验收另外需要 Playwright/Chromium。Makefile 直接执行 Go/Node 命令，不再需要 Python。`.env` 不会被自动加载；若使用该文件，请先在 shell 中导出其中的变量（参见根目录 README）。缺少这些工具时，应注明“未执行及原因”，而不是以静态代码检查代替运行结果。
+**环境要求：** Go 1.26+、Make；默认数据库模式还需 Docker Compose；`make test` 的前端部分需 Node.js；`make e2e` 另外需 Playwright/Chromium。全部默认参数写在 Makefile 中，不需要 Python 或 `.env.example`。数据库连接失败应检查 `docker compose ps`、`docker compose logs mongodb` 和自定义连接地址。
 
-## 三、验收结果填写
+## 三、2026-10-17 本机日志及后续修复
 
-正式提交时，请将上一节 T01～T06 的“未复测”改为真实结果，并保留下列可核对信息：
+依据提交者提供的终端记录，在“启动脚本去 Python 化”之后，曾得到以下真实结果：
 
-| 项目 | 本次记录 |
+| 命令 / 项目 | 已有终端记录 | 解释 |
+| --- | --- | --- |
+| `go test -count=1 ./tests/unit` | 通过 | Go 单元测试执行成功 |
+| `node --test tests/frontend/frontend.test.cjs` | **31/31 通过** | 前端测试执行成功 |
+| `make integration` | 未通过 | 7 个 MongoDB 测试尝试连接 `127.0.0.1:27018` 时被拒绝，没有进入业务断言 |
+| `make verify` | 在集成测试阶段中止 | 与上一条相同；后面的静态检查和构建没有在这次命令中执行 |
+| `coverage.out`（当时 34.3%） | **不能作为有效覆盖率** | MongoDB 测试没有成功执行，统计不完整 |
+
+根因是旧 Makefile 仅提供默认 MongoDB URI，没有负责启动数据库。修复后，使用默认 URI 的 `make run`、`make integration`、`make e2e` 会先通过 Docker Compose 启动并等待 MongoDB 健康；对自定义数据库则跳过 Compose。测试支持代码增加了简短的连接预检，避免连续长时间等待，并且仅在集成测试成功时保留完整覆盖率文件。
+
+**以上并不是修复后的测试通过记录。** 本次修改后的真实 MongoDB 集成结果、Chromium 验收和覆盖率仍需重新执行并填写；未执行的用例不得改写为“通过”。
+
+## 四、最终验收记录（提交前填写）
+
+| 项目 | 当前状态 |
 | --- | --- |
-| 执行日期及环境 | 尚未记录 |
-| make test | 未在本轮执行 |
-| MongoDB 集成测试 | 未在本轮执行 |
-| Chromium 端到端测试 | 未在本轮执行 |
-| 问卷创建、跳转、提交、统计页面截图 | 尚待实际运行后添加 |
-| 失败用例及修复后复测 | 以本次实际日志为准 |
+| 修复版执行日期与 Go/MongoDB 版本 | 待记录 |
+| 修复版 `make test` | 待复测 |
+| 修复版 `make integration` | 待复测 |
+| 修复版 `make verify` | 待复测 |
+| 可选 `make e2e` | 待复测 |
+| T01～T06 的真实输入与输出 | 待核对 |
+| 问卷创建、跳转、提交、统计页面截图 | 待添加 |
+| 最终覆盖率 | 仅在集成测试全部通过后记录 |
 
-此前仓库文档记载过 **2026-10-16** 的本地测试通过情况，但部分记录早于最新题型结构变更。因此不将历史覆盖率、用例通过数量或旧浏览器记录写作本轮成果。若最终版本复测通过，应以最终提交对应的日期、命令与输出替换上述说明。
+此前 2026-10-16 的历史通过记录发生在部分题型调整前，不应冒充当前代码的复测结果。请保存本次执行终端输出，按实际情况填写以上字段。
