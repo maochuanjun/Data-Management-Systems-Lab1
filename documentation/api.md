@@ -1,66 +1,64 @@
-# HTTP API 说明
+# HTTP API 说明（第一阶段）
 
-所有接口由 Go `net/http` 实现，数据格式为 JSON。除注册、登录外，访问业务接口需要会话 Cookie。`/api/public/` 表示填写者无须拥有问卷，不表示免登录。
+服务使用 Go 标准库 net/http，接口输入输出均为 JSON。返回错误时统一使用：
 
-错误统一返回 `{"error":"错误说明"}`。主要状态码：`200` 操作成功，`201` 创建成功，`400` 参数或答案不合法，`401` 未登录，`404` 资源不存在或无权访问，`409` 状态冲突或重复提交，`500` 服务端错误。
+~~~json
+{"error": "具体错误信息"}
+~~~
 
-## 一、账号
+常见状态码：**200** 成功，**201** 创建成功，**400** 参数或答案不合法，**401** 未登录，**404** 不存在或无访问权限，**409** 状态冲突、版本冲突或重复填写，**500** 数据库错误。
 
-| 方法 | 路径 | 请求 / 功能 |
+除注册和登录外，接口均要求登录会话 Cookie。路径中的 public 只表示填写者不必是问卷创建者，**不表示可以不登录**。
+
+## 一、账号与问卷
+
+| 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| POST | `/api/register` | `{"username":"alice","password":"..."}`，注册并登录，返回 `201` |
-| POST | `/api/login` | 同上，登录并设置会话 Cookie |
-| POST | `/api/logout` | 退出，删除会话 |
-| GET | `/api/me` | 查询当前用户 |
+| POST | /api/register | 注册并自动登录 |
+| POST | /api/login | 登录 |
+| POST | /api/logout | 退出 |
+| GET | /api/me | 查询当前用户 |
+| GET | /api/surveys | 查看自己创建的问卷 |
+| POST | /api/surveys | 创建问卷草稿 |
+| GET | /api/surveys/{id} | 获取自己的一份问卷 |
+| PUT | /api/surveys/{id} | 保存草稿（带 revision） |
+| POST | /api/surveys/{id}/publish | 发布问卷 |
+| POST | /api/surveys/{id}/close | 关闭问卷 |
 
-用户名为 3–32 位字母、数字或下划线。注册密码至少 8 个 Unicode 字符，且最多 72 个 UTF-8 字节。
+注册或登录请求：
 
-## 二、问卷管理（仅创建者）
+~~~json
+{"username": "alice", "password": "password123"}
+~~~
 
-| 方法 | 路径 | 功能 |
-| --- | --- | --- |
-| GET | `/api/surveys` | 查看自己创建的问卷 |
-| POST | `/api/surveys` | 创建草稿；请求体为问卷内容 |
-| GET | `/api/surveys/{id}` | 查看自己的问卷 |
-| PUT | `/api/surveys/{id}` | 保存草稿，需要提交当前 `revision` |
-| POST | `/api/surveys/{id}/publish` | 发布非空、合法的草稿 |
-| POST | `/api/surveys/{id}/close` | 关闭已发布问卷 |
-| DELETE | `/api/surveys/{id}` | 永久删除草稿，不允许删除已发布问卷 |
-| POST | `/api/surveys/{id}/archive` | 归档问卷；已发布则同时关闭 |
-| POST | `/api/surveys/{id}/restore` | 恢复归档，不自动重新开启 |
-| POST | `/api/surveys/{id}/reopen` | 重新开启已关闭、未归档的问卷 |
-| GET | `/api/surveys/{id}/stats` | 查看问卷统计 |
+创建草稿至少应提供标题和问卷基本配置；也可以先用空 questions 数组创建，再逐步编辑。保存草稿时带上上一次读取到的 revision；保存成功后 revision 加一。发布前必须至少有一道合法题目，不能在截止时间已经过去的情况下发布。
 
-创建或保存问卷时，主要可编辑字段有 `title`、`description`、`allowAnonymous`、`allowRepeat`、`deadline` 和 `questions`。
-
-**三类题型的数据格式：**`type="single"` 为单选，`type="multiple"` 为多选，`type="fill"` 为填空。填空题必须同时设置 `fillType="text"`（文本）或 `fillType="number"`（数字）；文本填空使用 `minLength/maxLength`，数字填空使用 `min/max/integer`。旧问卷的 `type="text"/"number"` 为兼容保留，不是新建题目的独立类型。
-
-保存草稿的示例：
+一份简化的保存请求：
 
 ~~~json
 {
   "revision": 1,
   "title": "课程反馈",
-  "description": "匿名反馈",
+  "description": "问卷说明",
   "allowAnonymous": true,
   "allowRepeat": false,
   "deadline": null,
   "questions": [
     {
       "id": "q1",
-      "title": "是否满意？",
+      "title": "是否继续？",
       "type": "single",
       "required": true,
       "options": [
-        {"id": "yes", "label": "满意"},
-        {"id": "no", "label": "不满意"}
+        {"id": "yes", "label": "是"},
+        {"id": "no", "label": "否"}
       ],
       "validation": {"integer": false},
       "rules": [{"operator": "eq", "value": "no", "target": "END"}]
     },
     {
       "id": "q2",
-      "title": "你的年龄",
+      "title": "年龄",
       "type": "fill",
       "fillType": "number",
       "required": true,
@@ -72,45 +70,62 @@
 }
 ~~~
 
-`PUT` 保存成功会将 `revision` 加一；旧版本请求返回 `409`。`reopen` 的请求体为 `{}`（保持原截止时间）、`{"deadline":null}`（取消截止时间）或 `{"deadline":"2026-11-01T12:00:00Z"}`（新的未来时间）。截止时间已经过去时不可保持原值直接重新开启。
+**题型约定：** single 为单选，multiple 为多选，fill 为填空；fillType=text/number 表示文本/数字。多选答案是选项 ID 数组，minSelect/maxSelect 限制数量；文本填空使用 minLength/maxLength，数字填空使用 min/max/integer。为读取旧数据，后端仍接受历史 type=text/number。
 
-## 三、填写问卷（需登录）
+## 二、填写与跳转
 
-| 方法 | 路径 | 用途 |
+填写页面地址：**/survey/{id}**。
+
+| 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/api/public/surveys/{id}` | 获取可访问问卷的公开内容 |
-| POST | `/api/public/surveys/{id}/next` | `{"questionId":"q1","answer":"yes"}`，校验并返回下一题 ID |
-| POST | `/api/public/surveys/{id}/responses` | `{"anonymous":true,"answers":{"q1":"yes"}}`，提交答卷，成功返回 `201` |
+| GET | /api/public/surveys/{id} | 登录后获取已发布/已关闭问卷的可见内容 |
+| POST | /api/public/surveys/{id}/next | 校验当前题答案，计算下一个题目 ID |
+| POST | /api/public/surveys/{id}/responses | 提交整份答卷 |
 
-`next` 返回 `{"answer":"yes","nextQuestionId":"END"}` 等数据。实际提交由后端重新计算完整跳转路径；必答未填、选择数量不符、数字越界或包含已跳过题目答案时返回 `400`。关闭、到期或归档问卷不可再提交。不允许重复时，同一登录账号再次提交返回 `409`。
+下一题请求：
 
-## 四、统计
+~~~json
+{"questionId": "q1", "answer": "no"}
+~~~
 
-- `GET /api/surveys/{id}/stats`：整卷汇总及每题第一页原始答案。
-- `GET /api/surveys/{id}/stats?summaryOnly=true`：只返回计数和平均值，原始答案列表为空。
-- `GET /api/surveys/{id}/stats?questionId=q1&offset=0&limit=20`：指定题目的统计和原始答案分页。
+成功响应：
 
-示例响应（省略其他题目）：
+~~~json
+{"answer": "no", "nextQuestionId": "END"}
+~~~
+
+提交示例（对应 q1 选择“是”，继续填写 q2）：
 
 ~~~json
 {
-  "totalResponses": 2,
-  "questions": [{
-    "id": "q1",
-    "title": "是否满意？",
-    "type": "single",
-    "answered": 2,
-    "options": [
-      {"id": "yes", "label": "满意", "count": 1},
-      {"id": "no", "label": "不满意", "count": 1}
-    ],
-    "values": ["yes", "no"],
-    "average": null,
-    "valuesOffset": 0,
-    "valuesLimit": 20,
-    "hasMore": false
-  }]
+  "anonymous": true,
+  "answers": {"q1": "yes", "q2": 21}
 }
 ~~~
 
-`totalResponses`、`answered` 为提交记录数/有实际答案的提交份数，不是独立人数。统计结果也会为新的填空题返回 `type="fill"` 和 `fillType`；仅数字填空计算 `average`。`offset` 为非负整数，`limit` 为 1–50；原始答案按 `submittedAt + _id` 排序，`hasMore` 指示是否存在下一页。统计数据不返回填写者身份。
+成功提交返回 201，包含答卷 ID 和提交时间。服务器会重新计算真实作答路径，不接受被跳过题目的答案；违反题型约束返回 400；问卷关闭、截止时间已到或重复提交被禁止时返回 409。anonymous=true 仅在创建者允许匿名时有效。
+
+## 三、统计（仅创建者）
+
+| 方法 | 路径 | 结果 |
+| --- | --- | --- |
+| GET | /api/surveys/{id}/stats | 整卷汇总及每题第一页原始答案 |
+| GET | /api/surveys/{id}/stats?summaryOnly=true | 整卷汇总，不加载原始答案 |
+| GET | /api/surveys/{id}/stats?questionId=q2&offset=0&limit=20 | 某题统计及原始答案分页 |
+
+返回字段包括 totalResponses、questions[].answered、options[].count、average、values、hasMore。数字填空计算 average；文本/数字内容在 values 中按页返回。limit 可设置 1 至 50，offset 为非负整数。
+
+统计按**提交记录**计数，允许重复提交时并非去重人数。具体 MongoDB 聚合说明见 [数据库与核心逻辑设计](design.md)。
+
+## 四、已有的辅助管理接口
+
+以下已在代码中实现，但不是第一次大作业初始需求的必需项：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| DELETE | /api/surveys/{id} | 删除无历史答卷的草稿 |
+| POST | /api/surveys/{id}/archive | 归档（已发布问卷会被关闭） |
+| POST | /api/surveys/{id}/restore | 恢复归档 |
+| POST | /api/surveys/{id}/reopen | 重新开启已关闭问卷 |
+
+reopen 可以提交空对象以沿用未过期的截止时间，或以 deadline:null 取消截止时间。以上功能保留原有答卷数据；课程验收应先覆盖前三节核心接口。
