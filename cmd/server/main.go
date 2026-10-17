@@ -21,7 +21,7 @@ func env(key, fallback string) string {
 }
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	db, err := store.New(ctx, env("MONGO_URI", "mongodb://127.0.0.1:27018/?directConnection=true"), env("MONGO_DB", "questionnaire"))
+	db, err := store.New(ctx, env("MONGO_URI", "mongodb://127.0.0.1:27018/?directConnection=true"), env("MONGO_DB", "questionnaire_lab1"))
 	cancel()
 	if err != nil {
 		slog.Error("MongoDB initialization failed (check URI, authentication and database permissions)", "error", err)
