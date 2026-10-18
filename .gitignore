@@ -1,16 +1,14 @@
-.omx/
-.codex/
-.agents/
-.aws/
-.playwright-mcp/
-docs/
+# Local configuration and build results
 .env
 *.env
-*:Zone.Identifier
 /bin/
 /coverage.out
 *.test
 *.log
-.vscode/
-.aws/
+
+# JavaScript test dependencies
 node_modules/
+
+# Editor / OS files
+.vscode/
+.DS_Store
