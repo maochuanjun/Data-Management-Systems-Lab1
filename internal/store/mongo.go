@@ -3,6 +3,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -76,6 +78,90 @@ func (s *Store) Init(ctx context.Context) error {
 			return fmt.Errorf("index %s: %w", name, err)
 		}
 	}
+	// The unique index must exist before any legacy keys are added. It also
+	// arbitrates concurrent initializers and preserves already-keyed responses.
+	return s.backfillLegacyDedupeKeys(ctx)
+}
+
+// backfillLegacyDedupeKeys restores the no-repeat policy for historical answers
+// that retained their respondent ID but predate dedupeKey. It adds only the
+// auxiliary key: answers, paths, identities, and all duplicate records survive.
+// An anonymous historical answer without a userId cannot be linked back to an
+// account safely, so it is retained without inventing a deduplication identity.
+func (s *Store) backfillLegacyDedupeKeys(ctx context.Context) error {
+	cursor, err := s.db.Collection("surveys").Find(ctx, bson.M{"allowRepeat": false},
+		options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return fmt.Errorf("find surveys for legacy deduplication: %w", err)
+	}
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		var survey struct {
+			ID string `bson:"_id"`
+		}
+		if err := cursor.Decode(&survey); err != nil {
+			return fmt.Errorf("decode legacy deduplication survey: %w", err)
+		}
+		if err := s.backfillSurveyDedupeKeys(ctx, survey.ID); err != nil {
+			return fmt.Errorf("backfill legacy deduplication for survey %s: %w", survey.ID, err)
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return fmt.Errorf("read surveys for legacy deduplication: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) backfillSurveyDedupeKeys(ctx context.Context, surveyID string) error {
+	responses := s.db.Collection("responses")
+	cursor, err := responses.Find(ctx, bson.M{
+		"surveyId": surveyID, "dedupeKey": bson.M{"$exists": false},
+		"userId": bson.M{"$type": "string", "$ne": ""},
+	}, options.Find().
+		SetProjection(bson.M{"_id": 1, "userId": 1}).
+		SetSort(bson.D{{Key: "submittedAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		var response struct {
+			ID     string `bson:"_id"`
+			UserID string `bson:"userId"`
+		}
+		if err := cursor.Decode(&response); err != nil {
+			return fmt.Errorf("decode legacy response: %w", err)
+		}
+		hash := sha256.Sum256([]byte(surveyID + ":" + response.UserID))
+		key := hex.EncodeToString(hash[:])
+		// The first historical record in submittedAt/_id order holds the key,
+		// unless an existing keyed record already represents this account. A
+		// competing Init may have set this record's key after our cursor read it;
+		// the conditional update never overwrites that successful migration.
+		_, err := responses.UpdateOne(ctx, bson.M{
+			"_id": response.ID, "surveyId": surveyID, "userId": response.UserID,
+			"dedupeKey": bson.M{"$exists": false},
+		}, bson.M{"$set": bson.M{"dedupeKey": key}})
+		if err != nil {
+			if mongo.IsDuplicateKeyError(err) {
+				// Existing historical duplicates remain intact. Only suppress the
+				// conflict if the intended account guard really exists; unrelated
+				// uniqueness errors or failed verification must abort startup.
+				existingErr := responses.FindOne(ctx, bson.M{"surveyId": surveyID, "dedupeKey": key},
+					options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
+				if existingErr == nil {
+					continue
+				}
+				if !errors.Is(existingErr, mongo.ErrNoDocuments) {
+					return fmt.Errorf("verify legacy guard after response %s conflict: %w", response.ID, existingErr)
+				}
+			}
+			return fmt.Errorf("set legacy response %s dedupeKey: %w", response.ID, err)
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return fmt.Errorf("read legacy responses: %w", err)
+	}
 	return nil
 }
 
@@ -88,7 +174,7 @@ func collectionSchemas() map[string]bson.M {
 	rule := bson.M{"bsonType": "object", "required": bson.A{"operator", "value", "target"}, "properties": bson.M{"operator": str, "target": str}}
 	question := bson.M{"bsonType": "object", "required": bson.A{"id", "title", "type", "required", "validation"}, "properties": bson.M{
 		"id": bson.M{"bsonType": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}, "title": str,
-		// Legacy documents stored text/number as separate types; new ones use fill + fillType.
+		// The editor saves fill + fillType; the API also accepts legacy text/number types.
 		"type": bson.M{"enum": bson.A{"single", "multiple", "fill", "text", "number"}}, "fillType": bson.M{"enum": bson.A{"text", "number"}}, "required": boolean,
 		"options": bson.M{"bsonType": bson.A{"array", "null"}, "items": option},
 		"rules":   bson.M{"bsonType": bson.A{"array", "null"}, "items": rule}, "validation": bson.M{"bsonType": "object"},
@@ -207,6 +293,7 @@ func (s *Store) Transition(ctx context.Context, id, owner, from, to string, revi
 	}
 	return nil
 }
+
 // Archive changes dashboard visibility without deleting historical responses.
 // Archiving a published survey also closes it in the same atomic update.
 func (s *Store) SetArchiveState(ctx context.Context, survey *domain.Survey, archived bool) error {

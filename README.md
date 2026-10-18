@@ -8,14 +8,14 @@
 
 - 注册、登录；用户只能管理自己创建的问卷和查看对应统计。
 - 创建问卷、添加题目、设置截止时间，发布后通过 `/survey/{id}` 分享，必要时关闭。
-- 三类题型：单选、多选、填空（文本或数字）；支持必答、选择数量、字数、数值范围和整数校验。
+- 三类题型：单选、多选、填空（文本或数字）；支持必答、选择数量、字数、数值范围和整数校验。多选的最少与最多数量设为同一值时，可要求恰好选择该数量。
 - 根据单选、多选及数字填空的答案执行问卷中配置的条件跳转。
 - 登录后填写，按设置匿名提交或限制同一账号重复填写；每次答卷独立存入 MongoDB。
 - 创建者查询整卷或单题统计，包括选项次数、数字平均值和填空内容。
 
 ## 运行
 
-需要 Go 1.26+、Make、MongoDB。默认用 Docker Compose 运行本地 MongoDB：
+运行服务需要 Go 1.26+、Make 和 MongoDB。使用默认本地数据库时还需要 Docker 与 Docker Compose；使用已有数据库时可直接指定连接地址。默认启动方式：
 
 ~~~sh
 make run
@@ -29,9 +29,11 @@ make run
 MONGO_URI='mongodb://127.0.0.1:27017' MONGO_DB=my_survey make run
 ~~~
 
-填写者必须先登录。匿名提交表示答卷不直接保存用户 ID，不表示免登录。
+填写者必须先登录。问卷允许匿名且填写者本次选择匿名提交时，答卷不直接保存用户 ID；本次未选择匿名时仍保存用户 ID。禁止重复填写时，匿名与实名提交共用账号级去重规则。
 
 ## 测试
+
+核心测试还需要 Node.js，因为 `make test` 和 `make verify` 都会运行 JavaScript 前端测试。集成测试及 E2E 默认启用 Go 的 `-race` 检测，需要可用的 C 编译工具链和支持 race 检测的 Go 环境。
 
 ~~~sh
 make test          # Go 单元测试与 JavaScript 前端测试
@@ -39,7 +41,7 @@ make integration   # MongoDB 集成测试
 make verify        # 以上核心测试、go vet、构建
 ~~~
 
-可选浏览器端到端测试需要 Node.js、Playwright 和 Chromium：
+可选浏览器端到端测试还需要 npm、Playwright 和 Chromium：
 
 ~~~sh
 npm ci
@@ -47,7 +49,7 @@ npx playwright install chromium
 make e2e
 ~~~
 
-本机验收记录：前端 **31/31**、Chromium **7/7**（含父测试）、MongoDB 集成测试通过，Go 合并语句覆盖率 **85.7%**。测试用例及结果见 [测试说明](documentation/testing.md)。
+验收结果：**前端 31/31、浏览器 E2E 7/7（含父测试）、Go 单元与真实 MongoDB 集成测试通过，核心包合并语句覆盖率 85.6%，go vet 与构建通过**。测试用例及结果见 [测试说明](documentation/testing.md)。
 
 ## 文档与目录
 

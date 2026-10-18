@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -17,8 +18,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 	"questionnaire/internal/domain"
@@ -98,24 +99,44 @@ func write(w http.ResponseWriter, code int, v any) {
 func fail(w http.ResponseWriter, code int, message string) {
 	write(w, code, map[string]string{"error": message})
 }
+
+const (
+	defaultJSONBodyLimit  int64 = 1 << 20
+	responseJSONBodyLimit int64 = 16 << 20
+)
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeWithLimit(w, r, v, defaultJSONBodyLimit)
+}
+
+func decodeWithLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		fail(w, 400, "请使用 application/json 请求")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		fail(w, 400, "请求 JSON 无效或字段不符合接口定义")
+		decodeError(w, err, "请求 JSON 无效或字段不符合接口定义")
 		return false
 	}
 	if err := d.Decode(new(any)); err != io.EOF {
-		fail(w, 400, "请求只能包含一个 JSON 对象")
+		decodeError(w, err, "请求只能包含一个 JSON 对象")
 		return false
 	}
 	return true
 }
+
+func decodeError(w http.ResponseWriter, err error, message string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("请求内容超过 %d MiB 大小限制", tooLarge.Limit>>20))
+		return
+	}
+	fail(w, http.StatusBadRequest, message)
+}
+
 func (s *Server) dbError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -408,6 +429,7 @@ func (s *Server) closeSurvey(w http.ResponseWriter, r *http.Request) {
 	survey.Revision++
 	write(w, 200, survey)
 }
+
 // deleteDraft only removes unpublished drafts. Keeping published submissions
 // intact is important for statistics and the second-stage compatibility tests.
 func (s *Server) deleteDraft(w http.ResponseWriter, r *http.Request) {
@@ -573,7 +595,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		Anonymous bool           `json:"anonymous"`
 		Answers   map[string]any `json:"answers"`
 	}
-	if !decode(w, r, &body) {
+	// 100 text questions x 10,000 Unicode code points x 12 bytes for escaped
+	// UTF-16 surrogate pairs is about 12 MB, plus small ID/JSON overhead. A
+	// 16 MiB cap fits that valid answer set; extra whitespace still counts.
+	if !decodeWithLimit(w, r, &body, responseJSONBodyLimit) {
 		return
 	}
 	survey, err := s.repo.Survey(r.Context(), r.PathValue("id"))

@@ -50,6 +50,16 @@ func TestVersionOneDocumentsRemainUsable(t *testing.T) {
 	}
 	server := httptest.NewServer(web.New(fixture.Store, false))
 	t.Cleanup(server.Close)
+	// The original respondent's first retry must already be rejected, including
+	// switching between named and anonymous submission after the upgrade.
+	legacyRespondent := legacyDedupeClient(t, fixture, server.URL, "legacy-respondent")
+	for _, anonymous := range []bool{false, true} {
+		legacyRespondent.must(t, "POST", "/api/public/surveys/legacy-published/responses",
+			integrationAnswers(anonymous, map[string]any{"single": "finish"}), 409)
+	}
+	if count, err := fixture.DB.Collection("responses").CountDocuments(fixture.Context, bson.M{"surveyId": "legacy-published"}); err != nil || count != 1 {
+		t.Fatalf("legacy retries must preserve the one historical response: count=%d err=%v", count, err)
+	}
 	owner := newIntegrationClient(t, server.URL)
 	owner.must(t, "POST", "/api/login", map[string]string{"username": "legacy_owner", "password": "legacy-password-123"}, 200)
 	surveys := integrationDecode[[]domain.Survey](t, owner.must(t, "GET", "/api/surveys", nil, 200))
@@ -121,6 +131,12 @@ func TestVersionOneDocumentsRemainUsable(t *testing.T) {
 	if err := fixture.DB.Collection("responses").FindOne(fixture.Context, bson.M{"_id": "legacy-response"}).Decode(&retained); err != nil {
 		t.Fatal(err)
 	}
+	if retained["dedupeKey"] != legacyDedupeKey("legacy-published", "legacy-respondent") {
+		t.Fatalf("historical response lacks its recovered account guard: %#v", retained)
+	}
+	// The compatibility migration may add its auxiliary key; all original data,
+	// including answers, path, identity, schema version, and timestamp, must stay.
+	delete(retained, "dedupeKey")
 	if !reflect.DeepEqual(retained, oldResponse) {
 		t.Fatalf("legacy response changed: before=%v after=%v", oldResponse, retained)
 	}
