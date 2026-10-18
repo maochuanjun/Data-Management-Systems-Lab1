@@ -47,7 +47,7 @@ npx playwright install chromium
 make e2e
 ~~~
 
-2026-10-17 的本机验收记录：前端 **31/31**、Chromium **7/7**（含父测试）、MongoDB 集成测试通过，Go 合并语句覆盖率 **85.7%**。测试用例及结果见 [测试说明](documentation/testing.md)。
+本机验收记录：前端 **31/31**、Chromium **7/7**（含父测试）、MongoDB 集成测试通过，Go 合并语句覆盖率 **85.7%**。测试用例及结果见 [测试说明](documentation/testing.md)。
 
 ## 文档与目录
 
@@ -62,5 +62,3 @@ make e2e
 | [API 说明](documentation/api.md) | 接口、参数与返回值 |
 | [测试用例与结果](documentation/testing.md) | 六类必需测试的步骤、输入、输出和结果 |
 | [AI 使用日志](documentation/ai-log.md) | 工具、提示词、代码产物及修改记录 |
-
-**项目完成报告单独提交课程作业平台，不作为代码仓库文件。**
