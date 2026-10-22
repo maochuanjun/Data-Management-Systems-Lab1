@@ -42,6 +42,7 @@ type Repository interface {
 	SetArchiveState(context.Context, *domain.Survey, bool) error
 	DeleteDraft(context.Context, *domain.Survey) error
 	Reopen(context.Context, *domain.Survey, *time.Time) error
+	HasResponse(context.Context, string, string) (bool, error)
 	InsertResponse(context.Context, *domain.Response, string) error
 	Stats(context.Context, *domain.Survey, int, int) (map[string]any, error)
 }
@@ -533,34 +534,45 @@ func (s *Server) reopen(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, survey)
 }
 
-func (s *Server) publicSurvey(w http.ResponseWriter, r *http.Request) *domain.Survey {
-	if s.auth(w, r) == nil {
-		return nil
+func (s *Server) publicSurvey(w http.ResponseWriter, r *http.Request) (*domain.Survey, *domain.User) {
+	u := s.auth(w, r)
+	if u == nil {
+		return nil, nil
 	}
 	survey, err := s.repo.Survey(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.dbError(w, err)
-		return nil
+		return nil, nil
 	}
 	if survey.Status == "draft" || survey.Archived {
 		fail(w, 404, "问卷尚未发布或已归档")
-		return nil
+		return nil, nil
 	}
-	return survey
+	return survey, u
 }
 func (s *Server) public(w http.ResponseWriter, r *http.Request) {
-	if survey := s.publicSurvey(w, r); survey != nil {
+	if survey, u := s.publicSurvey(w, r); survey != nil {
+		blocked := false
+		if !survey.AllowRepeat {
+			var err error
+			blocked, err = s.repo.HasResponse(r.Context(), survey.ID, digest(survey.ID+":"+u.ID))
+			if err != nil {
+				s.dbError(w, err)
+				return
+			}
+		}
 		// Public payload deliberately excludes the creator's account ID.
 		write(w, 200, struct {
-			ID             string            `json:"id"`
-			Title          string            `json:"title"`
-			Description    string            `json:"description"`
-			AllowAnonymous bool              `json:"allowAnonymous"`
-			AllowRepeat    bool              `json:"allowRepeat"`
-			Deadline       *time.Time        `json:"deadline"`
-			Status         string            `json:"status"`
-			Questions      []domain.Question `json:"questions"`
-		}{survey.ID, survey.Title, survey.Description, survey.AllowAnonymous, survey.AllowRepeat, survey.Deadline, survey.Status, survey.Questions})
+			ID                string            `json:"id"`
+			Title             string            `json:"title"`
+			Description       string            `json:"description"`
+			AllowAnonymous    bool              `json:"allowAnonymous"`
+			AllowRepeat       bool              `json:"allowRepeat"`
+			Deadline          *time.Time        `json:"deadline"`
+			Status            string            `json:"status"`
+			Questions         []domain.Question `json:"questions"`
+			SubmissionBlocked bool              `json:"submissionBlocked"`
+		}{survey.ID, survey.Title, survey.Description, survey.AllowAnonymous, survey.AllowRepeat, survey.Deadline, survey.Status, survey.Questions, blocked})
 	}
 }
 func open(w http.ResponseWriter, survey *domain.Survey) bool {
@@ -571,7 +583,7 @@ func open(w http.ResponseWriter, survey *domain.Survey) bool {
 	return true
 }
 func (s *Server) next(w http.ResponseWriter, r *http.Request) {
-	survey := s.publicSurvey(w, r)
+	survey, _ := s.publicSurvey(w, r)
 	if survey == nil || !open(w, survey) {
 		return
 	}
@@ -582,11 +594,11 @@ func (s *Server) next(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	for _, q := range survey.Questions {
+	for i, q := range survey.Questions {
 		if q.ID == body.QuestionID {
 			answer, err := domain.ValidateAnswer(q, body.Answer)
 			if err != nil {
-				fail(w, 400, err.Error())
+				fail(w, 400, fmt.Sprintf("第 %d 题：%s", i+1, err.Error()))
 				return
 			}
 			write(w, 200, map[string]any{"answer": answer, "nextQuestionId": domain.NextQuestion(survey, q.ID, answer)})

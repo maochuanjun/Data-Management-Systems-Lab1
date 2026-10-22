@@ -16,6 +16,7 @@ class Element {
     this.value = "";
     this.textContent = "";
     this.disabled = false;
+    this.inert = false;
     this.checked = false;
   }
   set value(value) {
@@ -53,9 +54,9 @@ const text = (root) => root.textContent + root.children.map(text).join("");
 const findButton = (root, label) =>
   walk(root).find((node) => node.tag === "button" && text(node) === label);
 function disabled(node) {
-  if (node.disabled) return true;
+  if (node.disabled || node.inert) return true;
   for (let parent = node.parent; parent; parent = parent.parent) {
-    if (parent.tag === "fieldset" && parent.disabled) return true;
+    if (parent.inert || parent.tag === "fieldset" && parent.disabled) return true;
   }
   return false;
 }
@@ -63,7 +64,7 @@ function click(node) {
   assert.ok(node, "button exists");
   return disabled(node)
     ? Promise.resolve()
-    : node.listeners.click({currentTarget: node});
+    : node.listeners.click({currentTarget: node, preventDefault() {}});
 }
 function change(node, value, event = "input") {
   assert.ok(node, "input exists");
@@ -89,6 +90,13 @@ async function browser(handler) {
     "#notice": new Element("aside"),
   };
   const calls = [];
+  const windowListeners = {};
+  const entries = [{url: "/login", state: null}];
+  let entryIndex = 0;
+  function setLocation(url) {
+    const parsed = new URL(url, "http://localhost");
+    Object.assign(context.location, {pathname: parsed.pathname, search: parsed.search, hash: parsed.hash});
+  }
   const context = vm.createContext({
     Node: Element,
     document: {
@@ -98,12 +106,29 @@ async function browser(handler) {
       createTextNode: (value) =>
         Object.assign(new Element("#text"), {textContent: String(value)}),
     },
-    window: {addEventListener() {}, scrollTo() {}, confirm: () => true},
-    location: {pathname: "/login", search: "", origin: "http://localhost"},
+    window: {addEventListener(name, listener) { windowListeners[name] = listener; }, scrollTo() {}, confirm: () => true},
+    location: {pathname: "/login", search: "", hash: "", origin: "http://localhost"},
     history: {
-      pushState(_state, _unused, url) {
-        context.location.pathname = url;
+      get state() { return entries[entryIndex].state; },
+      pushState(state, _unused, url) {
+        entries.splice(entryIndex + 1);
+        entries.push({state, url}); entryIndex++;
+        setLocation(url);
       },
+      replaceState(state, _unused, url) {
+        const target = url ?? context.location.pathname + context.location.search + context.location.hash;
+        entries[entryIndex] = {state, url: target}; setLocation(target);
+      },
+      go(delta) {
+        const target = entryIndex + delta;
+        if (target < 0 || target >= entries.length) return;
+        setImmediate(() => {
+          entryIndex = target; setLocation(entries[entryIndex].url);
+          windowListeners.popstate?.({state: entries[entryIndex].state});
+        });
+      },
+      back() { this.go(-1); },
+      forward() { this.go(1); },
     },
     navigator: {},
     URLSearchParams,
@@ -142,6 +167,7 @@ async function browser(handler) {
     calls,
     nodes,
     context,
+    windowListeners,
     view: (name) => vm.runInContext(`${name}('s')`, context),
   };
 }
@@ -1477,4 +1503,331 @@ test("phase-two a delayed bank preview does not notify a page opened after selec
   await adding;
   assert.equal(ui.nodes["#app"].children[0], newPage);
   assert.equal(text(ui.nodes["#notice"]), "New page notice");
+});
+
+function feedbackSurvey(question = {}) {
+  return {...draft(), status: "published", questions: [
+    {id: "first", title: "First answer", type: "fill", fillType: "text", required: true, validation: {}},
+    {id: "second", title: "Second answer", type: "fill", fillType: "text", required: true,
+      validation: {}, options: [{id: "one", label: "Readable one"}, {id: "two", label: "Readable two"}], ...question},
+  ]};
+}
+async function feedbackFillBrowser(survey, next) {
+  const ui = await browser(({url, method, body}) => {
+    if (url.endsWith("/next")) return next ? next(body) : {
+      answer: body.answer, nextQuestionId: body.questionId === "first" ? "second" : "END",
+    };
+    if (url.endsWith("/responses")) return {};
+    if (method === "GET") return survey;
+    throw new Error("Unexpected request: " + url);
+  });
+  ui.context.history.replaceState(ui.context.history.state, "", "/survey/s");
+  await vm.runInContext("render()", ui.context);
+  ui.root = ui.nodes["#app"].children[0];
+  return ui;
+}
+function answerControl(root) {
+  return walk(root).find((node) => node.tag === "textarea" || (node.tag === "input" && node.type !== "checkbox"));
+}
+for (const [kind, value] of [["text", "Keep this unsent text"], ["number", "001.20"],
+  ["number", "-"], ["number", "1e"], ["single", "one"], ["multiple", ["one", "two"]]]) {
+  test(`feedback preserves the unsent ${kind} draft ${JSON.stringify(value)} when returning from a previous question`, async () => {
+    const ui = await feedbackFillBrowser(feedbackSurvey(["text", "number"].includes(kind)
+      ? {fillType: kind} : {type: kind}));
+    const root = ui.root;
+    change(answerControl(root), "First value");
+    await click(findButton(root, "下一步"));
+    if (["text", "number"].includes(kind)) change(answerControl(root), value);
+    else for (const option of walk(root).filter((node) => node.tag === "input"))
+      if ([value].flat().includes(option.value)) change(option, true, "change");
+    await click(findButton(root, "上一步"));
+    assert.equal(answerControl(root).value, "First value");
+    await click(findButton(root, "下一步"));
+    if (["text", "number"].includes(kind)) assert.equal(answerControl(root).value, value);
+    else assert.deepEqual(walk(root).filter((node) => node.tag === "input" && node.checked).map((node) => node.value), [value].flat());
+    if (kind === "number") {
+      assert.equal(answerControl(root).type, "text", "raw incomplete numeric input survives browser value sanitization");
+      const before = ui.calls.filter((call) => call.url.endsWith("/next")).length;
+      await click(findButton(root, "下一步"));
+      if (value === "001.20") assert.equal(ui.calls.at(-1).body.answer, 1.2);
+      else {
+        assert.equal(ui.calls.filter((call) => call.url.endsWith("/next")).length, before);
+        assert.match(text(ui.nodes["#notice"]), /有效.*数字|有效.*数值/);
+        assert.equal(answerControl(root).value, value);
+      }
+    }
+  });
+}
+test("feedback rejects non-finite and non-decimal numeric text without turning it into a skipped answer", async () => {
+  const ui = await feedbackFillBrowser(feedbackSurvey({fillType: "number", required: false}));
+  change(answerControl(ui.root), "First value");
+  await click(findButton(ui.root, "下一步"));
+  const count = ui.calls.length;
+  for (const value of ["1e999", "Infinity", "NaN", "0x10", "1.2.3"]) {
+    change(answerControl(ui.root), value);
+    await click(findButton(ui.root, "下一步"));
+    assert.equal(ui.calls.length, count);
+    assert.equal(answerControl(ui.root).value, value);
+    assert.match(text(ui.nodes["#notice"]), /有效.*数字|有效.*数值/);
+  }
+  change(answerControl(ui.root), "-1.25e2");
+  await click(findButton(ui.root, "下一步"));
+  assert.equal(ui.calls.at(-1).body.answer, -125);
+});
+test("feedback overview and submission follow the changed branch and show labels rather than option IDs", async () => {
+  const survey = feedbackSurvey();
+  survey.questions[0] = {id: "first", title: "Choose a route", type: "single", required: true,
+    options: [{id: "detail_option_id", label: "Include details"}, {id: "short_option_id", label: "Finish early"}], validation: {}};
+  const ui = await feedbackFillBrowser(survey, ({questionId, answer}) => ({answer,
+    nextQuestionId: questionId === "first" && answer === "detail_option_id" ? "second" : "END"}));
+  change(walk(ui.root).find((node) => node.value === "detail_option_id"), true, "change");
+  await click(findButton(ui.root, "下一步"));
+  change(answerControl(ui.root), "Old branch detail");
+  await click(findButton(ui.root, "下一步"));
+  assert.match(text(ui.root), /答案概览/);
+  assert.match(text(ui.root), /Include details/);
+  assert.match(text(ui.root), /Old branch detail/);
+  await click(findButton(ui.root, "上一步"));
+  await click(findButton(ui.root, "上一步"));
+  change(walk(ui.root).find((node) => node.value === "short_option_id"), true, "change");
+  await click(findButton(ui.root, "下一步"));
+  assert.match(text(ui.root), /第 1 题：Choose a route/);
+  assert.match(text(ui.root), /Finish early/);
+  assert.doesNotMatch(text(ui.root), /Second answer|Old branch detail|short_option_id|detail_option_id/);
+  await click(findButton(ui.root, "提交问卷"));
+  assert.deepEqual(ui.calls.find((call) => call.url.endsWith("/responses")).body.answers,
+    {first: "short_option_id"});
+});
+test("feedback overview distinguishes an explicit skip from valid empty text and empty selections", async () => {
+  const survey = {...draft(), status: "published", questions: [
+    {id: "a", title: "Skipped text", type: "fill", fillType: "text", required: false, validation: {}},
+    {id: "b", title: "Empty text", type: "fill", fillType: "text", required: false, validation: {}},
+    {id: "c", title: "Empty choices", type: "multiple", required: false, validation: {}, options: [{id: "one", label: "One"}]},
+  ]};
+  const ui = await feedbackFillBrowser(survey, ({questionId, answer}) => ({answer,
+    nextQuestionId: {a: "b", b: "c", c: "END"}[questionId]}));
+  await click(findButton(ui.root, "跳过此题"));
+  await click(findButton(ui.root, "下一步"));
+  await click(findButton(ui.root, "下一步"));
+  const items = walk(ui.root).filter((node) => node.tag === "article");
+  assert.equal(items.length, 3);
+  assert.match(text(items[0]), /Skipped text.*已跳过/s);
+  assert.match(text(items[1]), /Empty text.*已回答（内容为空）/s);
+  assert.match(text(items[2]), /Empty choices.*已回答（内容为空）/s);
+  await click(findButton(ui.root, "提交问卷"));
+  assert.deepEqual(ui.calls.find((call) => call.url.endsWith("/responses")).body.answers, {b: "", c: []});
+  const messages = recordConfirmations(ui);
+  vm.runInContext("go('/login')", ui.context); await flush();
+  assert.equal(messages.length, 0, "a submitted response is no longer a draft");
+  assert.equal(ui.context.location.pathname, "/login");
+});
+test("feedback blocks an already-submitted respondent before showing any answering controls", async () => {
+  const ui = await feedbackFillBrowser({...feedbackSurvey(), submissionBlocked: true});
+  assert.match(text(ui.root), /你已经提交过这份问卷，本问卷不允许重复填写/);
+  assert.equal(findButton(ui.root, "下一步"), undefined);
+  assert.equal(answerControl(ui.root), undefined);
+  assert.equal(ui.calls.filter((call) => call.method !== "GET").length, 0);
+});
+
+for (const page of ["survey", "bank", "version", "sharing", "new-question", "new-bank", "answer"]) {
+  test(`feedback protects the unsaved ${page} from internal navigation and refresh without discarding input`, async () => {
+    let ui, control;
+    if (page === "version" || page === "sharing") {
+      ui = await libraryBrowser(() => ({}));
+      if (page === "version") {
+        await click(findButton(ui.root, "基于此版本编辑"));
+        control = titleField(libraryForm(ui.root));
+      } else control = sharingInput(ui.root);
+    } else if (page === "answer") {
+      ui = await feedbackFillBrowser(feedbackSurvey()); control = answerControl(ui.root);
+    } else {
+      const route = {survey: "/edit/s", bank: "/banks/s", "new-question": "/questions", "new-bank": "/banks"}[page];
+      ui = await phaseTwoBrowser(route, () => ({}));
+      if (page === "new-question") {
+        await click(findButton(ui.root, "＋ 新建题目")); control = titleField(libraryForm(ui.root));
+      } else control = titleField(ui.root);
+    }
+    const originalPath = ui.context.location.pathname;
+    change(control, "Unsaved user input");
+    const messages = recordConfirmations(ui);
+    vm.runInContext("go('/login')", ui.context);
+    await flush();
+    assert.equal(messages.length, 1);
+    assert.equal(ui.context.location.pathname, originalPath);
+    assert.equal(ui.nodes["#app"].children[0], ui.root);
+    assert.equal(control.value, "Unsaved user input");
+    let prevented = false;
+    const unload = {preventDefault() { prevented = true; }, returnValue: undefined};
+    ui.windowListeners.beforeunload?.(unload);
+    assert.equal(prevented, true);
+    assert.equal(unload.returnValue, "");
+    recordConfirmations(ui, true);
+    vm.runInContext("go('/login')", ui.context);
+    await flush();
+    assert.equal(ui.context.location.pathname, "/login");
+  });
+}
+test("feedback canceling browser back restores the URL and the same form; accepting back then forward navigates normally", async () => {
+  const ui = await browser(() => draft());
+  vm.runInContext("go('/edit/s')", ui.context);
+  await flush();
+  const root = ui.nodes["#app"].children[0];
+  const title = titleField(root); change(title, "Keep browser-back draft");
+  const messages = recordConfirmations(ui);
+  ui.context.history.back(); await flush(); await flush();
+  assert.equal(messages.length, 1);
+  assert.equal(ui.context.location.pathname, "/edit/s");
+  assert.equal(ui.nodes["#app"].children[0], root);
+  assert.equal(title.value, "Keep browser-back draft");
+  recordConfirmations(ui, true);
+  ui.context.history.back(); await flush(); await flush();
+  assert.equal(ui.context.location.pathname, "/login");
+  ui.context.history.forward(); await flush(); await flush();
+  assert.equal(ui.context.location.pathname, "/edit/s");
+  assert.equal(titleField(ui.nodes["#app"].children[0]).value, draft().title);
+});
+for (const page of ["survey", "bank", "sharing"]) {
+  test(`feedback successful ${page} saving resets the leave-warning baseline and failed saving keeps it dirty`, async () => {
+    let fail = true;
+    const mutate = (request) => {
+      if (fail) throw new Error("Failed to persist changes");
+      return page === "survey" ? {...request.body, revision: 2}
+        : page === "bank" ? {...bankFixture(), ...request.body, revision: 2}
+          : {...libraryTemplate(), sharedUsernames: ["alice"], sharingRevision: 4};
+    };
+    const ui = page === "sharing" ? await libraryBrowser(mutate)
+      : await phaseTwoBrowser(page === "survey" ? "/edit/s" : "/banks/s", mutate);
+    const control = page === "sharing" ? sharingInput(ui.root) : titleField(ui.root);
+    change(control, "alice");
+    const label = {survey: "保存草稿", bank: "保存题库", sharing: "保存共享设置"}[page];
+    const messages = recordConfirmations(ui);
+    await click(findButton(ui.root, label));
+    vm.runInContext("go('/login')", ui.context); await flush();
+    assert.equal(messages.length, 1);
+    assert.equal(ui.nodes["#app"].children[0], ui.root);
+    fail = false;
+    await click(findButton(ui.root, label));
+    vm.runInContext("go('/login')", ui.context); await flush();
+    assert.equal(messages.length, 1, "saved data must not prompt again");
+    assert.equal(ui.context.location.pathname, "/login");
+  });
+}
+test("feedback clean and reverted survey edits do not prompt, and canceled logout sends no request", async () => {
+  const ui = await phaseTwoBrowser("/edit/s", () => ({}));
+  const title = titleField(ui.root);
+  change(title, "Temporary title"); change(title, draft().title);
+  const messages = recordConfirmations(ui);
+  let prevented = false;
+  ui.windowListeners.beforeunload?.({preventDefault() { prevented = true; }});
+  assert.equal(prevented, false);
+  change(title, "Keep this title");
+  await click(findButton(ui.nodes["#nav"], "退出"));
+  assert.equal(messages.length, 1);
+  assert.equal(ui.calls.filter((call) => call.url === "/api/logout").length, 0);
+  assert.equal(ui.nodes["#app"].children[0], ui.root);
+  assert.equal(title.value, "Keep this title");
+});
+test("feedback adding and editing branching rules keeps their details expanded across repaint", async () => {
+  const ui = await phaseTwoBrowser("/edit/s", () => ({}));
+  function rulesPanel() { return walk(ui.root).find((node) => node.tag === "details" && text(node).includes("条件跳转")); }
+  const initial = rulesPanel(); initial.open = true;
+  initial.listeners.toggle?.({target: initial});
+  await click(findButton(ui.root, "＋ 增加规则"));
+  assert.equal(rulesPanel().open, true);
+  const operator = walk(rulesPanel()).find((node) => node.tag === "select");
+  change(operator, "contains_all", "change");
+  assert.equal(rulesPanel().open, true);
+  await click(findButton(ui.root, "移除规则"));
+  assert.equal(rulesPanel().open, true);
+});
+for (const page of ["question", "bank"]) {
+  test(`feedback creating a ${page} navigates after saving without asking to discard the saved form`, async () => {
+    const ui = await phaseTwoBrowser(page === "question" ? "/questions" : "/banks",
+      () => page === "question" ? libraryTemplate() : bankFixture(), (request) => {
+        if (request.url === "/api/questions/s") return libraryTemplate();
+        if (request.url.endsWith("/versions")) return libraryVersions();
+        if (request.url.endsWith("/usage")) return {ownSurveyCount: 0, surveys: []};
+        if (request.url.includes("/stats?")) return {surveyCount: 0, totalAnswers: 0, versions: []};
+      });
+    if (page === "question") await click(findButton(ui.root, "＋ 新建题目"));
+    const form = libraryForm(ui.root);
+    change(titleField(form), "A new saved item");
+    const messages = recordConfirmations(ui);
+    await submitForm(form); await flush();
+    assert.equal(ui.context.location.pathname, page === "question" ? "/questions/s" : "/banks/s");
+    assert.equal(messages.length, 0);
+    vm.runInContext("go('/login')", ui.context); await flush();
+    assert.equal(ui.context.location.pathname, "/login");
+    assert.equal(messages.length, 0);
+  });
+}
+test("feedback a successful draft save followed by a publish failure still updates the saved baseline", async () => {
+  const ui = await phaseTwoBrowser("/edit/s", (request) => {
+    if (request.method === "PUT") return {...request.body, revision: 2};
+    throw new Error("Publish is temporarily unavailable");
+  });
+  change(titleField(ui.root), "Persisted but not published");
+  const messages = recordConfirmations(ui);
+  await click(findButton(ui.root, "保存并发布"));
+  assert.equal(titleField(ui.root).value, "Persisted but not published");
+  assert.match(text(ui.nodes["#notice"]), /Publish is temporarily unavailable/);
+  vm.runInContext("go('/login')", ui.context); await flush();
+  assert.equal(ui.context.location.pathname, "/login");
+  assert.equal(messages.length, 0);
+});
+test("feedback an equivalent deadline instant does not leave a false unsaved warning after reverting it", async () => {
+  const ui = await phaseTwoBrowser("/edit/s", () => ({}), (request) => request.url === "/api/surveys/s"
+    ? {...draft(), deadline: "2026-12-01T10:00:00Z"} : undefined);
+  const deadline = libraryField(ui.root, "截止时间（本地时区）");
+  const original = deadline.value;
+  change(deadline, "2027-01-01T10:00"); change(deadline, original);
+  const messages = recordConfirmations(ui);
+  vm.runInContext("go('/login')", ui.context); await flush();
+  assert.equal(messages.length, 0);
+  assert.equal(ui.context.location.pathname, "/login");
+});
+for (const result of ["resolve", "reject"]) {
+  test(`feedback pending logout blocks new edits and safely ${result}s`, async () => {
+    const pending = deferred();
+    const ui = await phaseTwoBrowser("/edit/s", (request) => {
+      assert.equal(request.url, "/api/logout"); return pending.promise;
+    });
+    const title = titleField(ui.root), messages = recordConfirmations(ui);
+    const logout = click(findButton(ui.nodes["#nav"], "退出"));
+    assert.equal(disabled(title), true, "new input must not be accepted after logout starts");
+    change(title, "Input that would be lost by a late logout");
+    assert.equal(title.value, draft().title);
+    vm.runInContext("updateNav()", ui.context);
+    await click(findButton(ui.nodes["#nav"], "退出"));
+    assert.equal(ui.calls.filter((call) => call.url === "/api/logout").length, 1);
+    if (result === "resolve") pending.resolve({}); else pending.reject(new Error("Logout failed"));
+    await logout; await flush();
+    assert.equal(messages.length, 0);
+    assert.equal(ui.nodes["#app"].inert, false);
+    if (result === "resolve") assert.match(text(ui.nodes["#app"]), /欢迎回来/);
+    else {
+      assert.equal(ui.nodes["#app"].children[0], ui.root);
+      change(title, "Editable after the failure");
+      assert.equal(title.value, "Editable after the failure");
+      vm.runInContext("go('/login')", ui.context); await flush();
+      assert.equal(messages.length, 1);
+      assert.equal(ui.nodes["#app"].children[0], ui.root);
+    }
+  });
+}
+test("feedback protects an unsaved reopen deadline and clears the warning when the input is reverted", async () => {
+  const ui = await phaseTwoBrowser("/edit/s", () => ({}), (request) => request.url === "/api/surveys/s"
+    ? {...draft(), status: "closed"} : undefined);
+  const deadline = libraryField(ui.root, "重新开启后的截止时间（可留空）");
+  const original = deadline.value;
+  change(deadline, "2027-01-01T10:00");
+  const messages = recordConfirmations(ui);
+  vm.runInContext("go('/login')", ui.context); await flush();
+  assert.equal(messages.length, 1);
+  assert.equal(ui.nodes["#app"].children[0], ui.root);
+  assert.equal(deadline.value, "2027-01-01T10:00");
+  change(deadline, original);
+  vm.runInContext("go('/login')", ui.context); await flush();
+  assert.equal(messages.length, 1);
+  assert.equal(ui.context.location.pathname, "/login");
 });

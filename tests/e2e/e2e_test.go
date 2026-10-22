@@ -26,7 +26,7 @@ func TestBrowserAcceptance(t *testing.T) {
 	t.Cleanup(server.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", "--test", "browser.test.cjs", "library.test.cjs", "library_concurrency.test.cjs")
+	cmd := exec.CommandContext(ctx, "node", "--test", "browser.test.cjs", "library.test.cjs", "library_concurrency.test.cjs", "feedback.test.cjs")
 	cmd.Env = append(os.Environ(), "E2E_BASE_URL="+server.URL)
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))

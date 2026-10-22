@@ -26,6 +26,13 @@ func answerType(q Question) string {
 // ValidateSurvey checks the schema, including forward-only conditional jumps.
 // An empty question list is allowed while a survey is being drafted.
 func ValidateSurvey(s *Survey) error {
+	return validateSurvey(s, true)
+}
+
+// Unique option labels are an authoring rule. Submission still validates the
+// saved schema and answer IDs, but must not invalidate older published snapshots
+// whose distinct option IDs happen to have the same display text.
+func validateSurvey(s *Survey, uniqueOptionLabels bool) error {
 	if s == nil {
 		return fmt.Errorf("问卷不能为空")
 	}
@@ -38,33 +45,33 @@ func ValidateSurvey(s *Survey) error {
 	positions := make(map[string]int, len(s.Questions))
 	for i, q := range s.Questions {
 		if !validID.MatchString(q.ID) || q.ID == End {
-			return fmt.Errorf("题目 ID 无效: %q", q.ID)
+			return fmt.Errorf("第 %d 题的标识无效，请重新添加该题", i+1)
 		}
-		if _, exists := positions[q.ID]; exists {
-			return fmt.Errorf("题目 ID 重复: %s", q.ID)
+		if previous, exists := positions[q.ID]; exists {
+			return fmt.Errorf("第 %d 题与第 %d 题的标识重复，请重新添加该题", i+1, previous+1)
 		}
 		positions[q.ID] = i
 	}
 	for i, q := range s.Questions {
-		if err := validateQuestion(q); err != nil {
-			return fmt.Errorf("题目 %s: %w", q.ID, err)
+		if err := validateQuestion(q, uniqueOptionLabels); err != nil {
+			return fmt.Errorf("第 %d 题：%w", i+1, err)
 		}
 		for _, rule := range q.Rules {
 			if rule.Target != End {
 				position, exists := positions[rule.Target]
 				if !exists || position <= i {
-					return fmt.Errorf("题目 %s 的跳转目标必须为后续题目或 END", q.ID)
+					return fmt.Errorf("第 %d 题的跳转目标必须为后续题目或结束问卷", i+1)
 				}
 			}
 			if err := validateRule(q, rule); err != nil {
-				return fmt.Errorf("题目 %s 的跳转规则: %w", q.ID, err)
+				return fmt.Errorf("第 %d 题的跳转规则：%w", i+1, err)
 			}
 		}
 	}
 	return nil
 }
 
-func validateQuestion(q Question) error {
+func validateQuestion(q Question, uniqueOptionLabels bool) error {
 	if strings.TrimSpace(q.Title) == "" || utf8.RuneCountInString(q.Title) > 500 {
 		return fmt.Errorf("标题不能为空且不能超过 500 个字符")
 	}
@@ -80,12 +87,23 @@ func validateQuestion(q Question) error {
 		if len(q.Options) < 2 || len(q.Options) > 100 {
 			return fmt.Errorf("选择题需要 2 至 100 个选项")
 		}
-		seen := make(map[string]bool, len(q.Options))
-		for _, option := range q.Options {
-			if !validID.MatchString(option.ID) || seen[option.ID] || strings.TrimSpace(option.Label) == "" {
-				return fmt.Errorf("选项 ID 必须有效且唯一，选项文本不能为空")
+		seen := make(map[string]int, len(q.Options))
+		labels := make(map[string]int, len(q.Options))
+		for i, option := range q.Options {
+			if !validID.MatchString(option.ID) {
+				return fmt.Errorf("第 %d 个选项的标识无效，请重新添加该选项", i+1)
 			}
-			seen[option.ID] = true
+			if previous, exists := seen[option.ID]; exists {
+				return fmt.Errorf("第 %d 个选项与第 %d 个选项的标识重复，请重新添加该选项", i+1, previous+1)
+			}
+			label := strings.TrimSpace(option.Label)
+			if label == "" {
+				return fmt.Errorf("第 %d 个选项的文本不能为空", i+1)
+			}
+			if previous, exists := labels[label]; uniqueOptionLabels && exists {
+				return fmt.Errorf("第 %d 个选项与第 %d 个选项的文本重复", i+1, previous+1)
+			}
+			seen[option.ID], labels[label] = i, i
 		}
 	case "text", "number":
 		if len(q.Options) != 0 {
@@ -333,24 +351,25 @@ func matches(question Question, rule Rule, answer any) bool {
 // ValidateSubmission derives the actual path on the server, never trusting a
 // client-provided path or allowing answers for questions that were skipped.
 func ValidateSubmission(s *Survey, answers map[string]any) (map[string]any, []string, error) {
-	if err := ValidateSurvey(s); err != nil {
+	if err := validateSurvey(s, false); err != nil {
 		return nil, nil, err
 	}
 	if len(s.Questions) == 0 {
 		return nil, nil, fmt.Errorf("空问卷不能提交")
 	}
-	questions := make(map[string]Question, len(s.Questions))
-	for _, q := range s.Questions {
-		questions[q.ID] = q
+	positions := make(map[string]int, len(s.Questions))
+	for i, q := range s.Questions {
+		positions[q.ID] = i
 	}
 	normalized := make(map[string]any)
 	visited := make(map[string]bool)
 	path := make([]string, 0, len(s.Questions))
 	for id := s.Questions[0].ID; id != End; {
-		q := questions[id]
+		position := positions[id]
+		q := s.Questions[position]
 		answer, err := ValidateAnswer(q, answers[id])
 		if err != nil {
-			return nil, nil, fmt.Errorf("题目 %s: %w", q.ID, err)
+			return nil, nil, fmt.Errorf("第 %d 题：%w", position+1, err)
 		}
 		visited[id] = true
 		path = append(path, id)
@@ -360,8 +379,13 @@ func ValidateSubmission(s *Survey, answers map[string]any) (map[string]any, []st
 		id = NextQuestion(s, id, answer)
 	}
 	for id := range answers {
-		if !visited[id] {
-			return nil, nil, fmt.Errorf("答案包含不存在或已跳过的题目: %s", id)
+		if _, exists := positions[id]; !exists {
+			return nil, nil, fmt.Errorf("答案包含不存在的题目")
+		}
+	}
+	for i, q := range s.Questions {
+		if _, supplied := answers[q.ID]; supplied && !visited[q.ID] {
+			return nil, nil, fmt.Errorf("第 %d 题已跳过，不能提交该题答案", i+1)
 		}
 	}
 	return normalized, path, nil

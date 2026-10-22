@@ -185,9 +185,9 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27019/?directConnection=true' \
 
 浏览器测试连接本地 27018 实例，在随机命名的独立数据库中运行，结束后清理。复现命令沿用 `make test` 和 `make e2e`，也可直接设置 `INTEGRATION_MONGO_URI` 运行 `RUN_E2E=1 go test -count=1 -race -v ./tests/e2e`。
 
-## 9. 本次需求复核与最终验收（2026-10-22）
+## 9. 需求复核与迟到响应验收（历史，2026-10-22）
 
-本次复核起点是 `improve` 的 `3de80c8ff535f4054185481a4355a55df320ddab`。由 ChatGPT 协助在独立环境读取需求、审查代码、复现问题并运行修复后的测试；本节与前述 WSL 或其他本地环境的历史记录分开。最终源码以包含本节的交付提交为准，交付包另附提交和文件校验清单。
+本节复核起点是 `improve` 的 `3de80c8ff535f4054185481a4355a55df320ddab`，完成于 `59ee1ce594661e8dff960e7762959da161712c24`。由 ChatGPT 协助在独立环境读取需求、审查代码、复现问题并运行修复后的测试；本节与前述 WSL 或其他本地环境的历史记录分开。本节的 40/66/22 项及 83.3% 是该轮实际结果；后续用户反馈修复的最终结果见第 10 节。
 
 ### 异步页面回归
 
@@ -228,3 +228,57 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27019/?directConnection=true' \
 | `internal/...` 合并语句覆盖率 | 83.3%，由合并后的同一份 `coverage.out` 经 `go tool cover` 汇总。 |
 
 标准复现入口仍为 `make test`、`make integration`、`make vet`、`make build` 和 `make e2e`；使用外部测试数据库时设置 `INTEGRATION_MONGO_URI`。浏览器验收先按 README 安装 npm 依赖及 Chromium。交付包保留本轮实际命令、环境和逐条输出；覆盖率只汇总同一份覆盖率数据，Node 和浏览器场景数单独计数。既有历史数据兼容、匿名防重、长答卷、问卷生命周期和六类第一阶段测试继续执行。
+
+## 10. 七项用户反馈修复与最终验收（2026-10-22）
+
+本轮从 `59ee1ce594661e8dff960e7762959da161712c24` 继续，对用户截图中七项填写与编辑问题核实、修复并回归。八项第二阶段正式需求仍由既有测试检查，新增交互要求不冒充需求文档原文条款。
+
+### 反馈与断言对应
+
+| 反馈 | 回归步骤与必要断言 | 测试位置 |
+| --- | --- | --- |
+| 回退丢失输入 | 当前文本/数字尚未按下一步就回退，再回来原内容保持；数字 0、`-`、`1e` 等草稿不被清空；非法数值下一步仍失败。单选、多选也保留。改变分支后只提交实际路径中的合法答案。 | 前端 30 项新增回归中的填写场景；`tests/e2e/feedback.test.cjs`。 |
+| 未保存离开 | 问卷及题库编辑、新建题目/题库、版本与共享草稿、未提交回答均触发相应保护；取消站内导航、浏览器 Back、刷新后输入保留。保存成功更新基准，失败保留草稿；等价截止时刻不误警告；退出等待期不能新增将被丢弃的输入。 | 前端回归；真实浏览器对站内导航、后退和原生刷新分别检查取消与确认。 |
+| 重复提示太晚 | 不允许重复时当前账号的提前状态正确；匿名/实名同键、账号隔离、允许重复跳过查询；查询失败不误报可填；最终重复 POST 仍 409。 | `TestFeedbackPublicSubmissionPrecheck`、`TestFeedbackSubmissionPrecheckIdentityAndRepeatPolicy`、`TestFeedbackLegacySubmissionPrecheck`；旧/新浏览器防重断言。 |
+| 相同选项可发布 | 单选、多选的新配置拒绝首尾 ASCII/Unicode 空白去除后相同标签；保存、发布、新建与派生版本均拒绝。旧已发布快照仍可填，旧版本可忠实恢复且保持原文，修正派生后可发布。 | `TestFeedbackDuplicateOptionLabelsRejected`、`TestFeedbackPublishedDuplicateLabelsRemainAnswerable`、`TestFeedbackChoiceConfigurationAndPublishedCompatibility`。 |
+| 新规则折叠 | 点击新增规则后 `details.open=true`，条件、目标可立即配置，重绘后继续展开。 | 前端与真实浏览器规则场景。 |
+| 答案概览 | 只列实际路径；选项显示文字；0 正常显示；“已跳过”与合法空文本/空多选分开，旧分支不混入概览与最终提交。 | 前端与真实浏览器概览场景。 |
+| 错误难定位 | 配置和作答错误显示题号与必要的选项序号，不回显随机内部题 ID；特殊合法 ID 仍保持原协议和路径语义。 | `TestFeedbackValidationUsesQuestionNumbers`、HTTP 集成及浏览器错误场景。 |
+
+### 修复前后证据
+
+| 同条件检查 | 修复前实际结果 | 修复后实际结果 |
+| --- | --- | --- |
+| 最终 96 项 Node 前端测试 | 原始 `59ee1ce` 实现 70 通过、26 失败；原有 66 项均通过，新增 30 项中 4 项确认原有正确行为。 | 96/96 通过。 |
+| 新增 Go 专项，7 个顶层测试、35 条含子测试记录 | 3 通过、32 失败；3 条通过记录是旧已发布重复标签兼容。 | 35 条全部通过，启用 `-race`，集成连接真实 MongoDB。历史恢复与特殊 ID 的后续补充断言时序另记在专项说明中。 |
+| 新增真实浏览器 12 个业务场景 | 2 通过、10 失败；已通过的是分支旧答案清理和允许重复填写。含父测试的 Node 数量为 13，父失败不另算业务缺陷。 | 12 个业务子场景全部通过，连同父测试为 13/13。 |
+
+初轮前端 92 项前后日志仍保留。独立复查后又补充日期等价、退出成功/失败等待期和重新开启截止时间 4 项；92 项修复中间版在最终 96 项下为 92 通过、4 失败，随后修复并重新获得最终同套件对照。
+
+旧 E2E 相关预期按新行为调整：添加规则后直接检查展开；已提交账号重进或问卷重新开启后仍检查提前提示，另外用新账号验证重开后可填写。继续保留直接提交 409、统计数量以及历史两份答卷保留断言。取消原生刷新的测试助手改为等待实际对话框后验证页面和输入，避免把被取消导航的等待超时当成产品失败。环境端口受限的启动错误、旧预期和测试助手问题均单列说明，不混入最终缺陷或失败数量。
+
+### 本次最终执行结果
+
+环境仍为 Ubuntu 24.04.3 LTS（linux/amd64）、Go 1.26.0、GCC 13.3.0、MongoDB 8.0.16、Node.js 24.19.0、Playwright 1.64.1、Chrome Headless Shell 156.0.8078.4；本轮临时 MongoDB 绑定 `127.0.0.1:37038`，各测试只创建和清理自己的随机数据库。本轮没有执行 Docker Compose 启动流程。
+
+| 检查 | 本次最终结果 |
+| --- | --- |
+| Go 单元与真实 MongoDB 集成，`-count=1 -race -json` | 22 个单元 + 25 个集成 = 47 个顶层测试；含子测试 227 条 PASS，0 失败、0 跳过。单元包 6.598 秒，集成包 47.686 秒。 |
+| JavaScript 前端 | 96/96 通过，0 失败、0 跳过；原有 66 项及本轮新增 30 项。 |
+| 真实 Chromium E2E，Go `-race` | 35/35 通过，含 4 个父测试和 31 个业务子场景（原有 19 个 + 本轮新增 12 个），0 失败、0 跳过。Go 包装测试通过，不重复计数；包耗时 22.096 秒。 |
+| `go vet ./...`、服务构建 | 通过；无 Git 元数据的源码快照仅使用 `-buildvcs=false` 关闭版本戳写入。 |
+| `internal/...` 合并语句覆盖率 | 84.2%，由本轮单元和集成生成的同一份覆盖文件汇总，前端与浏览器不计入。 |
+
+实际业务命令如下，运行时路径可换为本机安装位置：
+
+~~~sh
+export INTEGRATION_MONGO_URI='mongodb://127.0.0.1:37038/?directConnection=true'
+go test -count=1 -race -json -coverpkg=./internal/... -coverprofile=coverage.out ./tests/unit ./tests/integration
+node tests/frontend/frontend.test.cjs
+go vet ./...
+go build -buildvcs=false -o bin/survey-lab ./cmd/server
+go tool cover -func=coverage.out
+RUN_E2E=1 PLAYWRIGHT_EXECUTABLE_PATH=/path/to/chrome-headless-shell go test -count=1 -race -v ./tests/e2e
+~~~
+
+源码的常规入口仍为 `make verify`、`make e2e`。交付包的 `verification/` 包含本轮命令、逐项输出和覆盖数据；`verification/previous-review/` 单独保留上一轮的迟到响应和 4,000 条长文本深分页探针。本轮没有重新执行该独立探针，也未修改它所检查的统计查询；原有 600 条长文本、历史兼容、并发、容量和权限测试仍纳入本轮完整 Go 回归。

@@ -61,16 +61,63 @@ function select(options, value, callback) {
   const node = el('select',{onchange:event => callback(event.target.value)},options.map(([key,label]) => el('option',{value:key},label))); node.value = value; return node;
 }
 function link(label, path, className = '') { return el('a',{href:path,class:className,onclick:event => {event.preventDefault();go(path);}},label); }
-function go(path) { history.pushState({},'',path); render(); }
-window.addEventListener('popstate',render);
+function contentSnapshot(value) {
+  return JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)
+    ?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+}
+let draftCheck=null,restoringHistory=false,logoutPending=false;
+let historyIndex=Number.isInteger(history.state?.surveyPageIndex)?history.state.surveyPageIndex:0;
+let pageAddress=location.pathname+location.search+(location.hash||'');
+history.replaceState({...history.state,surveyPageIndex:historyIndex},'');
+function confirmLeave() {
+  return !draftCheck?.()||window.confirm('当前页面有未保存的修改或尚未提交的回答。离开会丢弃这些内容，是否继续？');
+}
+function go(path,{confirmed=false}={}) {
+  if(restoringHistory||(!confirmed&&!confirmLeave()))return false;
+  history.pushState({surveyPageIndex:++historyIndex},'',path);render();return true;
+}
+window.addEventListener('popstate',event=>{
+  if(restoringHistory){restoringHistory=false;return;}
+  const destination=event.state?.surveyPageIndex;
+  if(!confirmLeave()){
+    // popstate happens after the URL changes. Restore the existing entry without
+    // repainting: canceling must keep the exact form and its unfinished input.
+    if(Number.isInteger(destination)&&destination!==historyIndex){
+      restoringHistory=true;history.go(historyIndex-destination);
+    }else history.replaceState({...history.state,surveyPageIndex:historyIndex},'',pageAddress);
+    return;
+  }
+  if(Number.isInteger(destination))historyIndex=destination;
+  else history.replaceState({...history.state,surveyPageIndex:historyIndex},'');
+  render();
+});
+window.addEventListener('beforeunload',event=>{
+  if(!draftCheck?.())return;
+  event.preventDefault();event.returnValue='';
+});
 document.querySelectorAll('[data-nav]').forEach(a => a.onclick = event => {event.preventDefault();go(a.getAttribute('href'));});
 function updateNav() {
   nav.replaceChildren(link('我的问卷','/'));
-  if (user) nav.append(link('我的题目','/questions'),link('题库','/banks'),el('span',{class:'username muted'},user.username),button('退出',async () => {await api('/api/logout','POST');user=null;render();}));
+  if (user){
+    const logout=button('退出',async()=>{
+      if(logoutPending||!confirmLeave())return;
+      const generation=routeGeneration,wasInert=app.inert;
+      // The accepted logout may complete later. Do not accept new form input
+      // that its successful response would immediately discard.
+      logoutPending=true;app.inert=true;
+      try{
+        await api('/api/logout','POST');user=null;
+        if(generation===routeGeneration)render();
+      }finally{logoutPending=false;app.inert=wasInert;updateNav();}
+    });
+    logout.disabled=logoutPending;
+    nav.append(link('我的题目','/questions'),link('题库','/banks'),el('span',{class:'username muted'},user.username),logout);
+  }
   else nav.append(link('登录 / 注册','/login?return='+encodeURIComponent(location.pathname)));
 }
 function hero(title, subtitle, action) { return el('section',{class:'hero'},el('div',{},el('h1',{},title),el('p',{class:'muted'},subtitle)),action); }
 async function render() {
+  draftCheck=null;pageAddress=location.pathname+location.search+(location.hash||'');
   const generation = ++routeGeneration; notice.hidden = true; updateNav(); app.replaceChildren(el('p',{class:'loading'},'正在加载…'));
   const path = location.pathname;
   try {
@@ -86,6 +133,7 @@ async function render() {
     else if (/^\/banks\/[^/]+$/.test(path)) view = await bankView(path.split('/')[2]);
     else view = await dashboard();
     if (generation !== routeGeneration) return;
+    draftCheck=()=>!!view.hasUnsavedChanges?.();
     app.replaceChildren(view); window.scrollTo(0,0);
   } catch(error) {
     if (generation !== routeGeneration) return;
@@ -150,33 +198,45 @@ function identifier(prefix) {return prefix+'_'+Math.random().toString(36).slice(
 async function editorView(id) {
   const generation=routeGeneration;
   let survey=await api('/api/surveys/'+id);
-  let busy=false;
+  let busy=false,savedSnapshot='',reopenDirty=false;
+  const expandedRules=new Set(),expandedConstraints=new Set();
   const root=el('fieldset',{style:'border:0;padding:0;margin:0;min-width:0'});
+  function snapshot(){
+    return contentSnapshot({title:survey.title,description:survey.description,allowAnonymous:survey.allowAnonymous,
+      allowRepeat:survey.allowRepeat,deadline:survey.deadline?new Date(survey.deadline).toISOString():null,questions:survey.questions});
+  }
+  root.hasUnsavedChanges=()=>reopenDirty||survey.status==='draft'&&!survey.archived&&snapshot()!==savedSnapshot;
 
   async function operation(path,method='POST',body){
-    if(busy)return;
+    if(busy||generation!==routeGeneration)return;
     busy=true;root.disabled=true;root.setAttribute('aria-busy','true');
     try{
       const result=await api('/api/surveys/'+id+path,method,body);
-      if(method==='DELETE'){go('/');return;}
+      if(generation!==routeGeneration)return;
+      if(method==='DELETE'){go('/',{confirmed:true});return;}
       survey=result;
-      paint();
+      paint();savedSnapshot=snapshot();
     }finally{
       busy=false;root.disabled=false;root.setAttribute('aria-busy','false');
     }
   }
   async function save(publish=false){
-    if(busy)return;
+    if(busy||generation!==routeGeneration)return;
     busy=true;root.disabled=true;root.setAttribute('aria-busy','true');
     try{
-      survey=await api('/api/surveys/'+id,'PUT',survey);
-      if(publish)survey=await api('/api/surveys/'+id+'/publish','POST');
-      show(publish?'发布成功，可以分享填写链接了':'草稿已保存',true);
+      const saved=await api('/api/surveys/'+id,'PUT',survey);
+      if(generation===routeGeneration){survey=saved;paint();savedSnapshot=snapshot();}
+      if(publish){
+        const published=await api('/api/surveys/'+id+'/publish','POST');
+        if(generation===routeGeneration){survey=published;paint();savedSnapshot=snapshot();}
+      }
+      if(generation===routeGeneration)show(publish?'发布成功，可以分享填写链接了':'草稿已保存',true);
     }finally{
-      busy=false;root.disabled=false;root.setAttribute('aria-busy','false');paint();
+      busy=false;root.disabled=false;root.setAttribute('aria-busy','false');if(generation===routeGeneration)paint();
     }
   }
   function paint() {
+    reopenDirty=false;
     const locked=survey.status!=='draft'||!!survey.archived;
     root.replaceChildren(hero(survey.archived?'已归档问卷':locked?'问卷详情':'设计问卷',
       survey.archived?'恢复归档后可以继续管理问卷。':locked?'发布后的题目和规则不可修改。':'先设置题目与规则，再保存并发布。',
@@ -227,7 +287,7 @@ async function editorView(id) {
       }
       if(survey.status==='closed'){
         const initial=survey.deadline&&new Date(survey.deadline)>new Date()?localDeadline:'';
-        const nextDeadline=input(initial,()=>{},'datetime-local',{'aria-label':'重新开启后的截止时间'});
+        const nextDeadline=input(initial,value=>reopenDirty=value!==initial,'datetime-local',{'aria-label':'重新开启后的截止时间'});
         const reopen=el('div',{class:'stack'},
           field('重新开启后的截止时间（可留空）',nextDeadline,
             '留空表示取消截止时间；若使用原截止时间，它必须尚未到期。重新开启不会清除已有回答。'),
@@ -239,9 +299,10 @@ async function editorView(id) {
         root.append(el('section',{class:'card'},el('h2',{},'重新开启'),reopen));
       }
       actions.push(button('归档问卷',async()=>{
-        const warning=survey.status==='published'
+        let warning=survey.status==='published'
           ?'归档会同时关闭正在收集回答的问卷，已有回答将保留。确定归档？'
           :'归档将从默认列表隐藏问卷，已有数据会保留。确定归档？';
+        if(root.hasUnsavedChanges())warning='当前有未保存的问卷修改，归档会丢弃这些修改。'+warning;
         if(typeof window.confirm==='function'&&!window.confirm(warning))return;
         await operation('/archive');
       }));
@@ -313,7 +374,9 @@ async function editorView(id) {
       },'number',{step:answerType(question)==='number'?'any':'1',...(answerType(question)!=='number'?{min:'0'}:{})})));
     if(answerType(question)==='number')constraints.append(checkbox('只接受整数',question.validation.integer,
       value=>question.validation.integer=value));
-    if(keys.length)card.append(el('details',{},el('summary',{},'填写限制'),
+    if(keys.length)card.append(el('details',{open:expandedConstraints.has(question.id),ontoggle:event=>{
+      if(event.target.open)expandedConstraints.add(question.id);else expandedConstraints.delete(question.id);
+    }},el('summary',{},'填写限制'),
       el('p',{class:'help'},'留空表示不限制；服务器将在填写时检查。'),constraints));
 
     if(question.sourceVersionId){
@@ -335,7 +398,9 @@ async function editorView(id) {
       text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[answerType(question)];
     const targets=[...survey.questions.slice(index+1).map((item,offset)=>
       [item.id,`${index+offset+2}. ${item.title||'未命名题目'}${offset===0?'（默认下一题）':''}`]),['END','结束问卷']];
-    const rules=el('details',{},el('summary',{},`条件跳转（${question.rules.length} 条）`),
+    const rules=el('details',{open:expandedRules.has(question.id),ontoggle:event=>{
+      if(event.target.open)expandedRules.add(question.id);else expandedRules.delete(question.id);
+    }},el('summary',{},`条件跳转（${question.rules.length} 条）`),
       el('p',{class:'help'},'按顺序匹配第一条符合的规则。若没有命中规则，自动进入下一题。跳到紧接着的下一题与默认行为相同；规则保存并发布后才会生效。'));
     question.rules.forEach((rule,ruleIndex)=>{
       const options=question.options.map(option=>[option.id,option.label||'(未命名选项)']);
@@ -372,12 +437,13 @@ async function editorView(id) {
     if(!locked&&operators.length)rules.append(button('＋ 增加规则',()=>{
       const first=question.options[0]?.id||'';
       question.rules.push({operator:operators[0][0],value:answerType(question)==='number'?0:first,target:'END'});
+      expandedRules.add(question.id);
       paint();
     }));
     if(operators.length)card.append(rules);
     return card;
   }
-  paint();
+  paint();savedSnapshot=snapshot();
   return root;
 }
 async function fillView(id){
@@ -385,13 +451,35 @@ async function fillView(id){
   const survey=await api('/api/public/surveys/'+id);
   const root=el('div',{class:'fill'});
   if(survey.status!=='published'||(survey.deadline&&new Date(survey.deadline)<=new Date()))return el('section',{class:'card fill'},el('h1',{},survey.title),el('p',{},'问卷尚未开放或已结束，暂时无法填写。'));
-  const answers=Object.create(null),path=[];let current=survey.questions[0]?.id || 'END',anonymous=false,submitting=false,navigating=false;
+  if(survey.submissionBlocked===true)return el('section',{class:'card fill'},el('h1',{class:'preview'},survey.title),el('p',{},'你已经提交过这份问卷，本问卷不允许重复填写'),link('返回首页','/'));
+  // Raw drafts survive back navigation, including unfinished numeric input.
+  // Only server-validated answers on the current path may reach submission.
+  const drafts=Object.create(null),answers=Object.create(null),path=[];
+  let current=survey.questions[0]?.id||'END',anonymous=false,submitting=false,navigating=false,completed=false;
+  root.hasUnsavedChanges=()=>!completed&&(path.length>0||anonymous||Object.values(drafts).some(value=>Array.isArray(value)?value.length>0:value!==''&&value!==null));
+  function answerOverview(){
+    const overview=el('section',{class:'answer-summary'},el('h3',{},'答案概览'));
+    for(const questionId of path){
+      const index=survey.questions.findIndex(question=>question.id===questionId),question=survey.questions[index];
+      const item=el('article',{class:'answer-summary-item'},el('h4',{class:'preview'},`第 ${index+1} 题：${question.title}`));
+      if(!Object.hasOwn(answers,questionId))item.append(el('p',{class:'muted'},'已跳过'));
+      else{
+        const answer=answers[questionId];
+        if(answer===''||(Array.isArray(answer)&&answer.length===0))item.append(el('p',{class:'muted'},'已回答（内容为空）'));
+        else if(question.type==='single')item.append(el('p',{class:'preview'},question.options.find(option=>option.id===answer)?.label||'选项暂不可用'));
+        else if(question.type==='multiple')item.append(el('ul',{},question.options.filter(option=>answer.includes(option.id)).map(option=>el('li',{class:'preview'},option.label))));
+        else item.append(el('p',{class:'preview'},String(answer)));
+      }
+      overview.append(item);
+    }
+    return overview;
+  }
   function paint(){
     root.replaceChildren(el('h1',{class:'preview'},survey.title),el('p',{class:'muted preview'},survey.description));
     if(survey.deadline)root.append(el('p',{class:'help'},'截止：'+new Date(survey.deadline).toLocaleString()));
     const question=survey.questions.find(q=>q.id===current);
     if(current==='END'){
-      const card=el('section',{class:'card'},el('h2',{},'已完成填写'),el('p',{class:'muted'},`已经过 ${path.length} 道题，请确认后提交。`));
+      const card=el('section',{class:'card'},el('h2',{},'已完成填写'),el('p',{class:'muted'},`已经过 ${path.length} 道题，请核对答案后提交；可点击“上一步”返回修改。`),answerOverview());
       let anonymousInput=null;
       if(survey.allowAnonymous){
         const anonymousToggle=checkbox('匿名提交（不展示我的身份）',anonymous,value=>anonymous=value);
@@ -406,7 +494,10 @@ async function fillView(id){
         if(backButton)backButton.disabled=true;
         if(anonymousInput)anonymousInput.disabled=true;
         try{
-          await api('/api/public/surveys/'+id+'/responses','POST',{anonymous,answers});
+          const submittedAnswers=Object.create(null);
+          for(const questionId of path)if(Object.hasOwn(answers,questionId))submittedAnswers[questionId]=answers[questionId];
+          await api('/api/public/surveys/'+id+'/responses','POST',{anonymous,answers:submittedAnswers});
+          completed=true;
           root.replaceChildren(el('section',{class:'card'},el('h1',{},'提交成功'),el('p',{},'回答已保存。'),link('返回首页','/')));
         }finally{
           submitting=false;
@@ -421,14 +512,15 @@ async function fillView(id){
     const position=survey.questions.findIndex(q=>q.id===current)+1;
     root.append(el('p',{class:'help'},`第 ${position} / ${survey.questions.length} 题 · ${questionLabel(question)}${question.required?' · 必填':' · 选填'}`),el('div',{class:'progress','aria-hidden':'true'},el('span',{style:`width:${position/survey.questions.length*100}%`})));
     const card=el('section',{class:'card'},el('h2',{class:'preview'},question.title));
-    let answer=answers[current] ?? null;
+    let answer=drafts[current]??(question.type==='multiple'?[]:question.type==='single'?null:'');
+    function remember(value){answer=value;drafts[question.id]=Array.isArray(value)?[...value]:value;}
     if(question.type==='single'){
-      for(const option of question.options)card.append(el('label',{class:'choice'},el('input',{type:'radio',name:question.id,value:option.id,checked:answer===option.id,onchange:()=>{answer=option.id;}}),option.label));
+      for(const option of question.options)card.append(el('label',{class:'choice'},el('input',{type:'radio',name:question.id,value:option.id,checked:answer===option.id,onchange:()=>remember(option.id)}),option.label));
     }else if(question.type==='multiple'){
       answer=Array.isArray(answer)?[...answer]:[];
-      for(const option of question.options)card.append(el('label',{class:'choice'},el('input',{type:'checkbox',value:option.id,checked:answer.includes(option.id),onchange:event=>{answer=event.target.checked?[...answer,option.id]:answer.filter(item=>item!==option.id);}}),option.label));
-    }else if(answerType(question)==='text')card.append(el('textarea',{value:answer??'','aria-label':question.title,oninput:event=>{answer=event.target.value;}}));
-    else card.append(input(answer,value=>{answer=value===''?null:Number(value);},'number',{step:question.validation?.integer?'1':'any','aria-label':question.title}));
+      for(const option of question.options)card.append(el('label',{class:'choice'},el('input',{type:'checkbox',value:option.id,checked:answer.includes(option.id),onchange:event=>remember(event.target.checked?[...new Set([...answer,option.id])]:answer.filter(item=>item!==option.id))}),option.label));
+    }else if(answerType(question)==='text')card.append(el('textarea',{value:answer,'aria-label':question.title,oninput:event=>remember(event.target.value)}));
+    else card.append(input(answer,remember,'text',{inputMode:'decimal',autocomplete:'off','aria-label':question.title}));
     const validation=question.validation||{},hints=[];
     for(const [key,label] of [['minSelect','至少选择'],['maxSelect','至多选择'],['minLength','最少字符数'],['maxLength','最多字符数'],['min','最小值'],['max','最大值']])if(validation[key]!==undefined)hints.push(label+' '+validation[key]);
     if(validation.integer)hints.push('只接受整数');
@@ -436,14 +528,28 @@ async function fillView(id){
     card.append(el('div',{class:'actions'},path.length?button('上一步',previous):null,!question.required?button('跳过此题',()=>next(null)):null,button('下一步',()=>next(answer),'primary')));root.append(card);
   }
   async function next(answer){
-    if(navigating||submitting)return;navigating=true;
+    if(navigating||submitting)return;
+    const question=survey.questions.find(item=>item.id===current);
+    if(answer!==null&&answerType(question)==='number'){
+      const raw=String(answer).trim();
+      if(raw==='')answer=null;
+      else{
+        const numeric=Number(raw);
+        if(!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)||!Number.isFinite(numeric))throw new Error(`第 ${survey.questions.indexOf(question)+1} 题：请输入有效的有限数值，例如 12、-3.5 或 1e2。`);
+        answer=numeric;
+      }
+    }
+    navigating=true;
+    const controls=Array.from(root.querySelectorAll('input,textarea,select,button'));controls.forEach(control=>control.disabled=true);
     try {
-    const result=await api('/api/public/surveys/'+id+'/next','POST',{questionId:current,answer});
-    if(result.answer!==null&&result.answer!==undefined)answers[current]=result.answer;else delete answers[current];
-    path.push(current);current=result.nextQuestionId;paint();
-    } finally {navigating=false;}
+      const result=await api('/api/public/surveys/'+id+'/next','POST',{questionId:current,answer});
+      if(result.answer!==null&&result.answer!==undefined)answers[current]=result.answer;else delete answers[current];
+      path.push(current);current=result.nextQuestionId;
+      for(const questionId of Object.keys(answers))if(!path.includes(questionId))delete answers[questionId];
+      paint();
+    } finally {navigating=false;controls.forEach(control=>control.disabled=false);}
   }
-  function previous(){if(navigating||submitting)return;delete answers[current];current=path.pop();paint();}
+  function previous(){if(navigating||submitting||!path.length)return;current=path.pop();delete answers[current];paint();}
   paint();return root;
 }
 async function statsView(id){
@@ -550,16 +656,12 @@ function questionContentForm(initial,submit,label='保存题目') {
   });
   function snapshot(){
     const content={...question,options:question.options||[],validation:{integer:false,...question.validation}};
-    return JSON.stringify([content,note],(_key,value)=>{
-      if(value&&typeof value==='object'&&!Array.isArray(value)){
-        return Object.fromEntries(Object.keys(value).sort().map(key=>[key,value[key]]));
-      }
-      return value;
-    });
+    return contentSnapshot([content,note]);
   }
   paint();
-  const initialSnapshot=snapshot();
+  let initialSnapshot=snapshot();
   form.hasUnsavedChanges=()=>snapshot()!==initialSnapshot;
+  form.markSaved=()=>{initialSnapshot=snapshot();};
   return form;
 }
 function versionPreview(version){
@@ -574,14 +676,18 @@ function versionPreview(version){
 async function libraryView(){
   const generation=routeGeneration;
   const templates=await api('/api/questions');
-  const create=el('section',{hidden:true});
+  const create=el('section',{hidden:true});let createForm=null;
   const root=el('div',{},hero('我的题目','管理可复用题目，以及其他用户共享给你的题目。',button('＋ 新建题目',()=>{
     create.hidden=!create.hidden;
-    if(!create.children.length)create.append(questionContentForm(newLibraryQuestion(),async(question,note)=>{
-      const template=await api('/api/questions','POST',{question,note});
-      if(generation===routeGeneration)go('/questions/'+template.id);
-    }));
+    if(!createForm){
+      createForm=questionContentForm(newLibraryQuestion(),async(question,note)=>{
+        const template=await api('/api/questions','POST',{question,note});
+        if(generation===routeGeneration){createForm.markSaved();go('/questions/'+template.id);}
+      });
+      create.append(createForm);
+    }
   },'primary')),create);
+  root.hasUnsavedChanges=()=>!!createForm?.hasUnsavedChanges();
   if(!templates.length)root.append(el('p',{class:'empty'},'暂无可用题目。新建题目，或在问卷中把现有题目另存到这里。'));
   else root.append(el('div',{class:'grid'},templates.map(template=>el('article',{class:'card'},
     el('span',{class:'badge'},template.ownerId===user.id?'我创建的':'共享给我的'),
@@ -596,6 +702,7 @@ async function libraryQuestionView(id){
   const root=el('fieldset',{class:'library-root'},hero(template.latestVersion?.question.title||'题目详情','版本内容永久保留。新版本与历史分支分别统计。',link('← 我的题目','/questions')));
   const editor=el('section',{hidden:true});
   let editingForm=null,sharingNames=null,savedSharingNames='';
+  root.hasUnsavedChanges=()=>!!editingForm?.hasUnsavedChanges()||!!sharingNames&&sharingNames.value!==savedSharingNames;
   root.append(editor);
   function confirmDiscard(action,{question=false,sharing=false}={}){
     const drafts=[];
@@ -743,20 +850,31 @@ async function banksView(){
   const generation=routeGeneration;
   const banks=await api('/api/question-banks');
   const root=el('div',{},hero('题库','按用途收录题目的固定版本；调整题库不会修改已有问卷。'));
-  let name='',description='';
+  let name='',description='',submitting=false,savedSnapshot=contentSnapshot(['','']);
+  root.hasUnsavedChanges=()=>contentSnapshot([name,description])!==savedSnapshot;
   const submit=el('button',{type:'submit',class:'primary'},'新建题库');
-  root.append(el('form',{class:'card',onsubmit:async event=>{
-    event.preventDefault();submit.disabled=true;
-    try{const bank=await api('/api/question-banks','POST',{name,description,versionIds:[]});if(generation===routeGeneration)go('/banks/'+bank.id);}
-    catch(error){if(generation===routeGeneration)show(error.message);}finally{submit.disabled=false;}
-  }},field('题库名称',input(name,value=>name=value,'text',{required:true,maxLength:100})),field('题库说明',input(description,value=>description=value)),submit));
+  const form=el('form',{class:'card',onsubmit:async event=>{
+    event.preventDefault();if(submitting||generation!==routeGeneration)return;submitting=true;
+    const controls=Array.from(form.querySelectorAll('input,button'));controls.forEach(control=>control.disabled=true);
+    try{
+      const bank=await api('/api/question-banks','POST',{name,description,versionIds:[]});
+      if(generation===routeGeneration){savedSnapshot=contentSnapshot([name,description]);go('/banks/'+bank.id);}
+    }
+    catch(error){if(generation===routeGeneration)show(error.message);}
+    finally{submitting=false;controls.forEach(control=>control.disabled=false);}
+  }},field('题库名称',input(name,value=>name=value,'text',{required:true,maxLength:100})),field('题库说明',input(description,value=>description=value)),submit);
+  root.append(form);
   root.append(banks.length?el('div',{class:'grid'},banks.map(bank=>el('article',{class:'card'},el('h2',{class:'preview'},bank.name),el('p',{class:'preview'},bank.description),el('p',{class:'help'},`${bank.versionIds?.length||0} 个固定版本`),link('管理题库','/banks/'+bank.id)))):el('p',{class:'empty'},'尚未创建题库。'));
   return root;
 }
 async function bankView(id){
   const generation=routeGeneration;
   let bank=await api('/api/question-banks/'+id),busy=false,renderSequence=0;
+  bank.versionIds ||= [];
+  function snapshot(){return contentSnapshot([bank.name,bank.description,bank.versionIds]);}
+  let savedSnapshot=snapshot();
   const root=el('fieldset',{class:'library-root'}),body=el('div'),entries=el('div'),picker=el('section',{class:'card',hidden:true});
+  root.hasUnsavedChanges=()=>snapshot()!==savedSnapshot;
   root.append(hero('管理题库','收录、移除或替换固定版本后，请保存题库。已有问卷引用保持原样。',link('← 题库列表','/banks')),body,entries,picker);
   async function paintEntries(){
     const generation=++renderSequence;
@@ -782,7 +900,9 @@ async function bankView(id){
     }
     if(!items.length)entries.append(el('p',{class:'empty'},'题库暂无题目，请添加固定版本。'));
   }
-  body.append(el('section',{class:'card'},field('题库名称',input(bank.name,value=>bank.name=value,'text',{required:true,maxLength:100})),field('题库说明',input(bank.description,value=>bank.description=value)),
+  const nameInput=input(bank.name,value=>bank.name=value,'text',{required:true,maxLength:100});
+  const descriptionInput=input(bank.description,value=>bank.description=value);
+  body.append(el('section',{class:'card'},field('题库名称',nameInput),field('题库说明',descriptionInput),
     el('div',{class:'actions'},button('添加题目版本',async()=>{
       picker.hidden=false;picker.replaceChildren(await libraryPicker(async version=>{
         if(bank.versionIds.includes(version.id))throw new Error('此版本已在题库中');
@@ -794,14 +914,15 @@ async function bankView(id){
       try{
         const saved=await api('/api/question-banks/'+id,'PUT',{name:bank.name,description:bank.description,versionIds:bank.versionIds,revision:bank.revision});
         if(generation!==routeGeneration)return;
-        bank=saved;show('题库已保存',true);
+        bank=saved;savedSnapshot=snapshot();nameInput.value=bank.name;descriptionInput.value=bank.description;
+        show('题库已保存',true);
       }
       finally{busy=false;root.disabled=false;}
     },'primary'),button('删除题库',async()=>{
       if(busy||generation!==routeGeneration)return;
       if(typeof window.confirm==='function'&&!window.confirm('确定删除此题库？题目版本和已创建的问卷将保留。'))return;
       busy=true;root.disabled=true;
-      try{await api('/api/question-banks/'+id+'?revision='+bank.revision,'DELETE');if(generation===routeGeneration)go('/banks');}
+      try{await api('/api/question-banks/'+id+'?revision='+bank.revision,'DELETE');if(generation===routeGeneration)go('/banks',{confirmed:true});}
       finally{busy=false;root.disabled=false;}
     },'danger'))));
   await paintEntries();return root;

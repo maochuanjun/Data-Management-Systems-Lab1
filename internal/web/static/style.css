@@ -316,6 +316,20 @@ summary {
   max-width: 740px;
   margin: 0 auto;
 }
+.answer-summary {
+  margin: 24px 0;
+}
+.answer-summary-item {
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+}
+.answer-summary-item h4 {
+  margin: 0 0 8px;
+}
+.answer-summary-item p,
+.answer-summary-item ul {
+  margin: 0;
+}
 .choice {
   display: flex;
   align-items: center;

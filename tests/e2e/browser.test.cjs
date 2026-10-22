@@ -88,10 +88,8 @@ test(
           .getByText(/条件跳转/)
           .click();
         await cards.nth(0).getByRole("button", {name: "＋ 增加规则"}).click();
-        await cards
-          .nth(0)
-          .getByText(/条件跳转/)
-          .click();
+        // Adding a rule now keeps its editor open, so it is immediately usable.
+        assert.equal(await cards.nth(0).getByLabel("条件值", {exact: true}).isVisible(), true);
         // Keep a precise accessible name even though the choices have text labels.
         // The rule value still persists the stable option ID, not the display text.
         const choiceCondition = cards
@@ -165,14 +163,13 @@ test(
         await branchPage.getByRole("button", {name: "提交问卷"}).click();
         await heading(branchPage, "提交成功");
         await branchPage.reload();
-        await heading(branchPage, "是否继续填写？");
-        await branchPage.getByText("直接结束", {exact: true}).click();
-        await branchPage.getByRole("button", {name: "下一步"}).click();
-        await branchPage.getByRole("button", {name: "提交问卷"}).click();
-        await branchPage
-          .getByRole("alert")
-          .filter({hasText: /不允许重复/})
-          .waitFor();
+        await branchPage.getByText("你已经提交过这份问卷，本问卷不允许重复填写", {exact: true}).waitFor();
+        assert.equal(await branchPage.getByRole("button", {name: "下一步", exact: true}).count(), 0);
+        // Entry-time guidance must not replace the final database-backed guard.
+        const published = await owner.request.get(baseURL + "/api/surveys/" + surveyID);
+        const gate = (await published.json()).questions[0];
+        const finish = gate.options.find(option => option.label === "直接结束");
+        await post(branch, "/api/public/surveys/" + surveyID + "/responses", {answers: {[gate.id]: finish.id}}, 409);
         await page.goto(baseURL + "/stats/" + surveyID);
         await heading(page, "回答统计");
         assert.equal(await page.locator(".large-number").textContent(), "2");
@@ -279,7 +276,17 @@ test(
         await page.getByRole("button", {name: "重新开启问卷"}).click();
         await page.locator(".badge.published").waitFor();
         await answerPage.goto(baseURL + "/survey/" + surveyID);
-        await heading(answerPage, "是否继续填写？");
+        await answerPage.getByText("你已经提交过这份问卷，本问卷不允许重复填写", {exact: true}).waitFor();
+        // Reopening preserves the previous account's deduplication while a
+        // genuinely new respondent can still enter the published survey.
+        const newcomer = await browser.newContext();
+        t.after(() => newcomer.close());
+        await post(newcomer, "/api/register", {username: "e2e_reopened_newcomer", password: "e2e-password-123"}, 201);
+        const reopenedPage = await newcomer.newPage();
+        reopenedPage.setDefaultTimeout(10000);
+        reopenedPage.on("pageerror", (error) => pageErrors.push(error.message));
+        await reopenedPage.goto(baseURL + "/survey/" + surveyID);
+        await heading(reopenedPage, "是否继续填写？");
 
         page.once("dialog", (dialog) => dialog.accept());
         await page.getByRole("button", {name: "归档问卷"}).click();

@@ -382,6 +382,18 @@ func (s *Store) Reopen(ctx context.Context, survey *domain.Survey, deadline *tim
 	return nil
 }
 
+// HasResponse is an advisory check using the same indexed private key as the
+// final insert. It returns no answer content or respondent information.
+func (s *Store) HasResponse(ctx context.Context, surveyID, dedupeKey string) (bool, error) {
+	err := s.db.Collection("responses").FindOne(ctx,
+		bson.M{"surveyId": surveyID, "dedupeKey": dedupeKey},
+		options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return false, nil
+	}
+	return err == nil, translate(err)
+}
+
 func (s *Store) InsertResponse(ctx context.Context, response *domain.Response, dedupeKey string) error {
 	data, err := bson.Marshal(response)
 	if err != nil {
