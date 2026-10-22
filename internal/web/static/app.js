@@ -66,7 +66,7 @@ window.addEventListener('popstate',render);
 document.querySelectorAll('[data-nav]').forEach(a => a.onclick = event => {event.preventDefault();go(a.getAttribute('href'));});
 function updateNav() {
   nav.replaceChildren(link('我的问卷','/'));
-  if (user) nav.append(el('span',{class:'username muted'},user.username),button('退出',async () => {await api('/api/logout','POST');user=null;render();}));
+  if (user) nav.append(link('我的题目','/questions'),link('题库','/banks'),el('span',{class:'username muted'},user.username),button('退出',async () => {await api('/api/logout','POST');user=null;render();}));
   else nav.append(link('登录 / 注册','/login?return='+encodeURIComponent(location.pathname)));
 }
 function hero(title, subtitle, action) { return el('section',{class:'hero'},el('div',{},el('h1',{},title),el('p',{class:'muted'},subtitle)),action); }
@@ -80,6 +80,10 @@ async function render() {
     else if (!user) view = authView();
     else if (/^\/edit\/[^/]+$/.test(path)) view = await editorView(path.split('/')[2]);
     else if (/^\/stats\/[^/]+$/.test(path)) view = await statsView(path.split('/')[2]);
+    else if (path === '/questions') view = await libraryView();
+    else if (/^\/questions\/[^/]+$/.test(path)) view = await libraryQuestionView(path.split('/')[2]);
+    else if (path === '/banks') view = await banksView();
+    else if (/^\/banks\/[^/]+$/.test(path)) view = await bankView(path.split('/')[2]);
     else view = await dashboard();
     if (generation !== routeGeneration) return;
     app.replaceChildren(view); window.scrollTo(0,0);
@@ -255,6 +259,14 @@ async function editorView(id) {
           validation:{integer:false},rules:[]});
         paint();
       })));
+      const picker=el('section',{class:'card',hidden:true});
+      root.append(el('div',{class:'actions'},button('从我的题目或题库添加',async()=>{
+        picker.hidden=false;picker.replaceChildren(el('p',{},'正在加载可用题目…'));
+        picker.replaceChildren(await libraryPicker(version=>{
+          survey.questions.push({...reusableQuestion(version.question),id:identifier('q'),sourceQuestionId:version.questionId,sourceVersionId:version.id,rules:[]});
+          paint();show('已添加固定版本，请保存草稿',true);
+        },true),button('收起选择器',()=>{picker.hidden=true;}));
+      })),picker);
       root.append(el('div',{class:'toolbar row between'},
         el('span',{class:'help'},`${survey.questions.length} 道题 · 修改后请保存`),
         el('div',{class:'actions'},button('保存草稿',()=>save()),button('保存并发布',()=>save(true),'primary'))));
@@ -263,7 +275,7 @@ async function editorView(id) {
   function questionEditor(question,index,locked){
     // Editing a legacy draft upgrades its representation without changing IDs.
     // Published legacy questionnaires keep their original stored type.
-    if(!locked&&(question.type==='text'||question.type==='number')){
+    if(!locked&&!question.sourceVersionId&&(question.type==='text'||question.type==='number')){
       question.fillType=question.type;
       question.type='fill';
     }
@@ -303,6 +315,21 @@ async function editorView(id) {
     if(keys.length)card.append(el('details',{},el('summary',{},'填写限制'),
       el('p',{class:'help'},'留空表示不限制；服务器将在填写时检查。'),constraints));
 
+    if(question.sourceVersionId){
+      const content=el('fieldset',{disabled:true,class:'linked-content'});
+      const heading=card.children[0];
+      const fields=Array.from(card.children).slice(1);
+      card.replaceChildren(heading,el('p',{class:'help'},'引用固定题目版本：内容保持不变，跳转规则属于当前问卷。'),
+        link('查看来源及版本','/questions/'+question.sourceQuestionId),content);
+      content.append(...fields);
+      if(!locked)card.append(button('转为独立题目',()=>{
+        delete question.sourceQuestionId;delete question.sourceVersionId;paint();
+      }));
+    }
+    if(!locked)card.append(button('另存为我的题目',async()=>{
+      await api('/api/questions','POST',{question:reusableQuestion(question),note:'从问卷保存'});
+      show('已保存到我的题目，可在题库中收录；问卷跳转规则不复制',true);
+    }));
     const operators={single:[['eq','等于选项']],multiple:[['contains','包含选项'],['contains_all','包含全部选项']],
       text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[answerType(question)];
     const targets=[...survey.questions.slice(index+1).map((item,offset)=>
@@ -473,3 +500,244 @@ async function statsView(id){
   root.append(el('section',{class:'card'},field('按题目查看',select([['','全部题目'],...stats.questions.map((q,i)=>[q.id,`${i+1}. ${q.title}`])],'',paint))),list);paint('');return root;
 }
 (async()=>{try{user=await api('/api/me');}catch{user=null;}await render();})();
+
+function reusableQuestion(question) {
+  const copy=JSON.parse(JSON.stringify(question));
+  delete copy.sourceQuestionId;delete copy.sourceVersionId;
+  copy.id='template';copy.rules=[];
+  if(copy.type==='text'||copy.type==='number'){copy.fillType=copy.type;copy.type='fill';}
+  return copy;
+}
+function newLibraryQuestion(type='single') {
+  return {id:'template',title:'',type,required:true,validation:{},rules:[],
+    ...(type==='fill'?{fillType:'text'}:{}),
+    options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[]};
+}
+function questionContentForm(initial,submit,label='保存题目') {
+  let question=reusableQuestion(initial),note='';
+  const form=el('form',{class:'card'});
+  function paint(){
+    form.replaceChildren(field('题目类型',select(Object.entries(typeNames),question.type,type=>{
+      question={...newLibraryQuestion(type),title:question.title,required:question.required};paint();
+    })),field('题目标题',input(question.title,value=>question.title=value,'text',{required:true})),
+    checkbox('必填',question.required,value=>question.required=value));
+    if(question.type==='fill')form.append(field('填空内容',select([['text','文本'],['number','数字']],fillType(question),value=>{
+      question.fillType=value;question.validation={};paint();
+    })));
+    if(['single','multiple'].includes(question.type)){
+      for(const option of question.options)form.append(el('div',{class:'option-row'},
+        input(option.label,value=>option.label=value,'text',{'aria-label':'选项文字',required:true}),
+        button('移除选项',()=>{question.options=question.options.filter(item=>item!==option);paint();},'danger')));
+      form.append(button('增加选项',()=>{question.options.push({id:identifier('o'),label:'新选项'});paint();}));
+    }
+    question.validation ||= {};
+    const keys={multiple:[['minSelect','至少选择'],['maxSelect','至多选择']],text:[['minLength','最少字符数'],['maxLength','最多字符数']],number:[['min','最小数值'],['max','最大数值']]}[answerType(question)]||[];
+    for(const [key,text] of keys)form.append(field(text,input(question.validation[key],value=>{
+      if(value==='')delete question.validation[key];else question.validation[key]=Number(value);
+    },'number',{step:answerType(question)==='number'?'any':'1',...(answerType(question)!=='number'?{min:'0'}:{})})));
+    if(answerType(question)==='number')form.append(checkbox('只接受整数',question.validation.integer,value=>question.validation.integer=value));
+    form.append(field('版本说明',input(note,value=>note=value)),el('p',{class:'help'},'每次保存生成独立版本。已有问卷和题库引用继续使用原版本。'),el('button',{type:'submit',class:'primary'},label));
+  }
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    const controls=Array.from(form.querySelectorAll('input,select,button'));controls.forEach(control=>control.disabled=true);
+    try{await submit(reusableQuestion(question),note);}catch(error){show(error.message);}
+    finally{controls.forEach(control=>control.disabled=false);}
+  });
+  paint();return form;
+}
+function versionPreview(version){
+  const question=version.question;
+  return el('div',{},el('h3',{class:'preview'},question.title),el('p',{class:'help'},`${questionLabel(question)} · ${question.required?'必填':'选填'}`),
+    (question.options||[]).length?el('ul',{},question.options.map(option=>el('li',{class:'preview'},option.label))):null,
+    el('p',{class:'help'},Object.entries(question.validation||{}).map(([key,value])=>{
+      const labels={minSelect:'至少选择',maxSelect:'至多选择',minLength:'最少字符数',maxLength:'最多字符数',min:'最小数值',max:'最大数值',integer:'只接受整数'};
+      return key==='integer'?(value?'只接受整数':''):`${labels[key]||key}：${value}`;
+    }).filter(Boolean).join(' · ')));
+}
+async function libraryView(){
+  const templates=await api('/api/questions');
+  const create=el('section',{hidden:true});
+  const root=el('div',{},hero('我的题目','管理可复用题目，以及其他用户共享给你的题目。',button('＋ 新建题目',()=>{
+    create.hidden=!create.hidden;
+    if(!create.children.length)create.append(questionContentForm(newLibraryQuestion(),async(question,note)=>{
+      const template=await api('/api/questions','POST',{question,note});go('/questions/'+template.id);
+    }));
+  },'primary')),create);
+  if(!templates.length)root.append(el('p',{class:'empty'},'暂无可用题目。新建题目，或在问卷中把现有题目另存到这里。'));
+  else root.append(el('div',{class:'grid'},templates.map(template=>el('article',{class:'card'},
+    el('span',{class:'badge'},template.ownerId===user.id?'我创建的':'共享给我的'),
+    el('h2',{class:'preview'},template.latestVersion?.question.title||'未命名题目'),
+    el('p',{class:'help'},'最新版本 v'+(template.latestVersion?.version||1)),link('版本、共享与统计','/questions/'+template.id)))));
+  return root;
+}
+async function libraryQuestionView(id){
+  const [template,versions]=await Promise.all([api('/api/questions/'+id),api('/api/questions/'+id+'/versions')]);
+  const owner=template.ownerId===user.id,byID=new Map(versions.map(version=>[version.id,version]));
+  const root=el('div',{},hero(template.latestVersion?.question.title||'题目详情','版本内容永久保留。新版本与历史分支分别统计。',link('← 我的题目','/questions')));
+  const editor=el('section',{hidden:true});
+  root.append(editor);
+  function editVersion(version){
+    editor.hidden=false;editor.replaceChildren(el('h2',{},`基于 v${version.version} 创建新版本`),questionContentForm(version.question,async(question,note)=>{
+      await api('/api/questions/'+id+'/versions','POST',{baseVersionId:version.id,question,note});await render();show('新版本已创建，已有问卷引用保持原样',true);
+    },'保存新版本'),button('取消编辑',()=>{editor.hidden=true;}));
+    if(editor.scrollIntoView)editor.scrollIntoView({block:'start'});
+  }
+  const history=el('section',{},el('h2',{},'版本历史'));
+  for(const version of [...versions].reverse()){
+    const parent=byID.get(version.parentVersionId),restored=byID.get(version.restoredFromVersionId);
+    const card=el('article',{class:'card'},el('div',{class:'row between'},el('h3',{},'v'+version.version),
+      el('span',{class:'help'},new Date(version.createdAt).toLocaleString())),
+      el('p',{class:'help'},parent?`基于 v${parent.version}${restored?' · 恢复自 v'+restored.version:''}`:'初始版本'),
+      versionPreview(version),el('p',{class:'preview'},version.note||'无版本说明'));
+    if(owner)card.append(el('div',{class:'actions'},button('基于此版本编辑',()=>editVersion(version)),button('恢复此版本',async()=>{
+      await api('/api/questions/'+id+'/restore','POST',{versionId:version.id,note:'恢复历史版本 v'+version.version});
+      await render();show('已将历史内容恢复为新版本，全部旧版本保留',true);
+    })));
+    history.append(card);
+  }
+  root.append(history);
+  if(owner){
+    const names=input((template.sharedUsernames||[]).join(', '),()=>{},'text',{'aria-label':'共享用户名'});
+    root.append(el('section',{class:'card'},el('h2',{},'共享题目'),field('共享用户名',names,'用逗号分隔。保存会替换共享名单；留空保存可撤销全部共享。被共享者可查看和引用版本，不能修改你的题目。'),button('保存共享设置',async()=>{
+      await api('/api/questions/'+id+'/sharing','PUT',{usernames:names.value.split(/[,，\s]+/).filter(Boolean)});
+      show('共享设置已保存',true);
+    })));
+  }
+  const usagePanel=el('section',{class:'card'},el('h2',{},'使用情况'));
+  root.append(usagePanel);
+  try{
+    const usage=await api('/api/questions/'+id+'/usage');
+    usagePanel.append(el('p',{},`我的问卷：${usage.ownSurveyCount} 份`),owner?el('p',{class:'help'},`全部用户合计：${usage.totalSurveyCount} 份问卷，${usage.totalOccurrenceCount} 处引用；仅展示我创建的问卷详情。`):null,
+      el('ul',{},(usage.surveys||[]).map(item=>el('li',{},link(item.title,'/edit/'+item.surveyId),` · v${byID.get(item.versionId)?.version||'?'} · ${item.archived?'已归档 · ':''}${statusNames[item.status]||item.status}`))));
+  }catch(error){usagePanel.append(el('p',{class:'error'},error.message));}
+  const statistics=el('section',{class:'card'},el('h2',{},'跨问卷统计'),el('p',{class:'help'},'只汇总当前账号创建的问卷；按引用版本分别统计，不混合不同版本的答案。'));
+  const results=el('div');let queryGeneration=0;
+  async function loadStatistics(versionId='',offset=0){
+    const current=++queryGeneration;
+    const stats=await api('/api/questions/'+id+'/stats?limit=20&offset='+offset+(versionId?'&versionId='+encodeURIComponent(versionId):''));
+    if(current!==queryGeneration)return;
+    results.replaceChildren(el('p',{},`${stats.surveyCount} 份问卷 · ${stats.totalAnswers} 份题目回答`));
+    for(const group of stats.versions||[]){
+      const card=el('article',{class:'card'},el('h3',{class:'preview'},`v${group.version} · ${group.title}`),el('p',{class:'help'},`${group.surveyCount} 份问卷 · ${group.answered} 份回答`));
+      for(const option of group.options||[]){
+        const percent=group.answered?Math.round(option.count/group.answered*100):0;
+        card.append(el('div',{class:'stat-line'},el('div',{class:'row between'},el('span',{},option.label),el('span',{},`${option.count} 次 · ${percent}%`)),el('div',{class:'bar'},el('span',{style:`width:${percent}%`}))));
+      }
+      if(group.average!==null&&group.average!==undefined)card.append(el('p',{},'均值：'+group.average));
+      if(group.numericDistribution?.length)card.append(el('h3',{},'数值分布'),el('ul',{},group.numericDistribution.map(bucket=>el('li',{},`${bucket.min} – ${bucket.max}：${bucket.count} 份`))));
+      if(versionId&&['text','number'].includes(answerType(group))){
+        card.append(el('h3',{},'原始答案'),el('ol',{class:'response-values',start:(group.valuesOffset||0)+1},(group.values||[]).map(value=>el('li',{},String(value)))));
+        const controls=el('div',{class:'actions'});
+        if(group.valuesOffset>0)controls.append(button('上一页答案',()=>loadStatistics(versionId,Math.max(0,group.valuesOffset-20))));
+        if(group.hasMore)controls.append(button('下一页答案',()=>loadStatistics(versionId,group.valuesOffset+20)));
+        card.append(controls);
+      }
+      results.append(card);
+    }
+  }
+  statistics.append(field('统计版本',select([['','所有版本（分别统计）'],...versions.map(version=>[version.id,'v'+version.version+' · '+version.question.title])],'',value=>{
+    results.replaceChildren(el('p',{class:'help'},'正在加载统计…'));
+    loadStatistics(value).catch(error=>show(error.message));
+  })),results);
+  root.append(statistics);
+  try{await loadStatistics();}catch(error){results.replaceChildren(el('p',{class:'error'},error.message));}
+  return root;
+}
+
+// The picker loads only explicitly selected versions; adding never saves or
+// reloads the surrounding survey, so other unsaved edits stay in memory.
+async function libraryPicker(onChoose,includeBanks=false){
+  const templates=await api('/api/questions');
+  const root=el('div',{class:'stack'}),details=el('div');let sequence=0;
+  async function pickTemplate(id){
+    const generation=++sequence;details.replaceChildren();if(!id)return;
+    try{
+      const versions=await api('/api/questions/'+id+'/versions');if(generation!==sequence)return;
+      let selected=versions[versions.length-1];
+      if(!selected){details.append(el('p',{},'暂无可用版本'));return;}
+      const preview=el('div',{},versionPreview(selected));
+      details.append(field('题目版本',select(versions.map(version=>[version.id,`v${version.version} · ${version.question.title}`]),selected.id,value=>{
+        selected=versions.find(version=>version.id===value);preview.replaceChildren(versionPreview(selected));
+      })),preview,button('添加选定版本',()=>onChoose(selected),'primary'));
+    }catch(error){if(generation===sequence)details.replaceChildren(el('p',{class:'error'},error.message));}
+  }
+  root.append(field('选择题目',select([['','请选择题目'],...templates.map(template=>[template.id,(template.latestVersion?.question.title||'未命名题目')+(template.ownerId===user.id?'（我的）':'（共享）')])],'',pickTemplate)),details);
+  if(includeBanks){
+    const banks=await api('/api/question-banks'),entries=el('div');let bankSequence=0;
+    root.append(field('或选择题库',select([['','请选择题库'],...banks.map(bank=>[bank.id,bank.name])],'',async id=>{
+      const generation=++bankSequence;entries.replaceChildren();if(!id)return;
+      try{
+        const bank=await api('/api/question-banks/'+id);
+        const versions=await Promise.all((bank.versionIds||[]).map(versionId=>api('/api/question-versions/'+versionId).then(version=>({version})).catch(error=>({versionId,error}))));
+        if(generation!==bankSequence)return;
+        if(!versions.length)entries.append(el('p',{class:'help'},'这个题库还没有题目。'));
+        for(const item of versions){
+          if(item.error)entries.append(el('p',{class:'help'},'一个题目版本暂不可用：'+item.error.message));
+          else entries.append(el('div',{class:'card'},el('h3',{class:'preview'},item.version.question.title),el('p',{class:'help'},'固定版本 v'+item.version.version),button('添加此题库版本',()=>onChoose(item.version))));
+        }
+      }catch(error){if(generation===bankSequence)entries.replaceChildren(el('p',{class:'error'},error.message));}
+    })),entries);
+  }
+  return root;
+}
+async function banksView(){
+  const banks=await api('/api/question-banks');
+  const root=el('div',{},hero('题库','按用途收录题目的固定版本；调整题库不会修改已有问卷。'));
+  let name='',description='';
+  const submit=el('button',{type:'submit',class:'primary'},'新建题库');
+  root.append(el('form',{class:'card',onsubmit:async event=>{
+    event.preventDefault();submit.disabled=true;
+    try{const bank=await api('/api/question-banks','POST',{name,description,versionIds:[]});go('/banks/'+bank.id);}
+    catch(error){show(error.message);}finally{submit.disabled=false;}
+  }},field('题库名称',input(name,value=>name=value,'text',{required:true,maxLength:100})),field('题库说明',input(description,value=>description=value)),submit));
+  root.append(banks.length?el('div',{class:'grid'},banks.map(bank=>el('article',{class:'card'},el('h2',{class:'preview'},bank.name),el('p',{class:'preview'},bank.description),el('p',{class:'help'},`${bank.versionIds?.length||0} 个固定版本`),link('管理题库','/banks/'+bank.id)))):el('p',{class:'empty'},'尚未创建题库。'));
+  return root;
+}
+async function bankView(id){
+  let bank=await api('/api/question-banks/'+id),busy=false,renderSequence=0;
+  const root=el('fieldset',{class:'library-root'}),body=el('div'),entries=el('div'),picker=el('section',{class:'card',hidden:true});
+  root.append(hero('管理题库','收录、移除或替换固定版本后，请保存题库。已有问卷引用保持原样。',link('← 题库列表','/banks')),body,entries,picker);
+  async function paintEntries(){
+    const generation=++renderSequence;
+    const items=await Promise.all(bank.versionIds.map(versionId=>api('/api/question-versions/'+versionId).then(version=>({version})).catch(error=>({versionId,error}))));
+    if(generation!==renderSequence)return;
+    entries.replaceChildren();
+    for(const item of items){
+      const versionId=item.version?.id||item.versionId;
+      const card=el('article',{class:'card'},item.error?el('p',{class:'error'},'版本暂不可用：'+item.error.message):versionPreview(item.version));
+      if(item.version)card.append(el('p',{class:'help'},'固定版本 v'+item.version.version),link('查看题目历史','/questions/'+item.version.questionId));
+      card.append(button('从题库移除',async()=>{bank.versionIds=bank.versionIds.filter(value=>value!==versionId);await paintEntries();},'danger'));
+      if(item.version){
+        const replacement=el('div');card.append(button('更换固定版本',async()=>{
+          const versions=await api('/api/questions/'+item.version.questionId+'/versions');
+          let next=versionId;
+          replacement.replaceChildren(field('替换为版本',select(versions.map(version=>[version.id,'v'+version.version+' · '+version.question.title]),versionId,value=>next=value)),button('确认替换',async()=>{
+            if(next!==versionId&&bank.versionIds.includes(next))throw new Error('此版本已在题库中');
+            bank.versionIds=bank.versionIds.map(value=>value===versionId?next:value);await paintEntries();
+          }));
+        }),replacement);
+      }
+      entries.append(card);
+    }
+    if(!items.length)entries.append(el('p',{class:'empty'},'题库暂无题目，请添加固定版本。'));
+  }
+  body.append(el('section',{class:'card'},field('题库名称',input(bank.name,value=>bank.name=value,'text',{required:true,maxLength:100})),field('题库说明',input(bank.description,value=>bank.description=value)),
+    el('div',{class:'actions'},button('添加题目版本',async()=>{
+      picker.hidden=false;picker.replaceChildren(await libraryPicker(async version=>{
+        if(bank.versionIds.includes(version.id))throw new Error('此版本已在题库中');
+        bank.versionIds.push(version.id);picker.hidden=true;await paintEntries();show('已添加，请保存题库',true);
+      }),button('收起选择器',()=>{picker.hidden=true;}));
+    }),button('保存题库',async()=>{
+      if(busy)return;busy=true;root.disabled=true;
+      try{bank=await api('/api/question-banks/'+id,'PUT',{name:bank.name,description:bank.description,versionIds:bank.versionIds,revision:bank.revision});show('题库已保存',true);}
+      finally{busy=false;root.disabled=false;}
+    },'primary'),button('删除题库',async()=>{
+      if(busy)return;
+      if(typeof window.confirm==='function'&&!window.confirm('确定删除此题库？题目版本和已创建的问卷将保留。'))return;
+      busy=true;root.disabled=true;
+      try{await api('/api/question-banks/'+id+'?revision='+bank.revision,'DELETE');go('/banks');}
+      finally{busy=false;root.disabled=false;}
+    },'danger'))));
+  await paintEntries();return root;
+}

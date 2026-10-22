@@ -483,3 +483,31 @@ summary {
     }
   }
 }
+
+.library-root,
+.linked-content {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.linked-content {
+  margin: 16px 0;
+}
+.linked-content:disabled input,
+.linked-content:disabled select {
+  background: #f5f7f4;
+}
+@media (max-width: 650px) {
+  .site-header {
+    height: auto;
+    min-height: 80px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  nav {
+    flex-wrap: wrap;
+  }
+}
