@@ -1,8 +1,6 @@
 # 在线问卷系统（MongoDB + Go）
 
-《当代数据管理系统》第一次大作业·第一阶段。
-
-本项目实现问卷创建、发布、填写、条件跳转和结果统计。后端用 Go，数据保存在 MongoDB，网页使用原生 HTML/CSS/JavaScript。程序不依赖关系数据库或现成问卷系统。
+本项目提供问卷创建、发布、填写、条件跳转、题库管理和结果统计。后端用 Go，数据保存在 MongoDB，网页使用原生 HTML/CSS/JavaScript。程序不依赖关系数据库或现成问卷系统。
 
 ## 功能
 
@@ -12,10 +10,14 @@
 - 根据单选、多选及数字填空的答案执行问卷中配置的条件跳转。
 - 登录后填写，按设置匿名提交或限制同一账号重复填写；每次答卷独立存入 MongoDB。
 - 创建者查询整卷或单题统计，包括选项次数、数字平均值和填空内容。
+- 保存可复用题目，按用户名共享；在多份问卷中选择指定版本。
+- 从任一历史版本派生新版本或恢复内容，保留来源关系；已有问卷继续使用保存时的快照。
+- 创建个人题库，添加、移除或替换固定版本；查看题目的问卷使用情况。
+- 按题目版本汇总自己创建的多份问卷，查看数值分布和分页答案。共享题目不会公开其他用户的答卷。
 
 ## 运行
 
-运行服务需要 Go 1.26+、Make 和 MongoDB。使用默认本地数据库时还需要 Docker 与 Docker Compose；使用已有数据库时可直接指定连接地址。默认启动方式：
+运行服务需要 Go 1.26+、Make 和 MongoDB 8.0。使用默认本地数据库时还需要 Docker 与 Docker Compose；使用已有数据库时可直接指定连接地址。默认启动方式：
 
 ~~~sh
 make run
@@ -49,18 +51,18 @@ npx playwright install chromium
 make e2e
 ~~~
 
-验收结果：**前端 31/31、浏览器 E2E 7/7（含父测试）、Go 单元与真实 MongoDB 集成测试通过，核心包合并语句覆盖率 85.6%，go vet 与构建通过**。测试用例及结果见 [测试说明](documentation/testing.md)。
+测试按领域单元、真实 MongoDB 集成、前端交互和浏览器端到端四层组织，全部放在 `tests/`。执行记录和覆盖范围见 [测试说明](documentation/testing.md)。
 
 ## 文档与目录
 
 | 路径 | 内容 |
 | --- | --- |
-| `internal/domain/` | 问卷结构、答案校验、条件跳转 |
+| `internal/domain/` | 问卷与题库模型、答案校验、条件跳转 |
 | `internal/store/` | MongoDB Schema、索引、数据读写和统计 |
 | `internal/web/` | HTTP 接口、认证与网页 |
 | `cmd/server/` | 程序入口 |
 | `tests/` | 单元、集成、前端和浏览器测试 |
 | [MongoDB 设计](documentation/design.md) | 集合划分、设计理由、索引与业务逻辑 |
 | [API 说明](documentation/api.md) | 接口、参数与返回值 |
-| [测试用例与结果](documentation/testing.md) | 六类必需测试的步骤、输入、输出和结果 |
+| [测试用例与结果](documentation/testing.md) | 基础业务与题库版本功能的测试步骤及执行记录 |
 | [AI 使用日志](documentation/ai-log.md) | 工具、提示词、代码产物及修改记录 |

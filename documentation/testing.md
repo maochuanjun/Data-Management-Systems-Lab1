@@ -1,6 +1,6 @@
 # 测试用例与结果
 
-本项目按《大作业一》要求，对创建问卷、添加题目、条件跳转、输入校验、提交问卷和统计结果分别设置测试。单元测试使用 Go `testing`，数据库集成测试使用独立的 MongoDB 测试库，前端使用 Node.js 测试，浏览器验收使用 Playwright/Chromium。
+测试覆盖创建问卷、添加题目、条件跳转、输入校验、提交问卷、统计结果，以及题库与版本管理。单元测试使用 Go `testing`，数据库集成测试使用独立的 MongoDB 测试库，前端使用 Node.js 测试，浏览器验收使用 Playwright/Chromium。
 
 ## 1. 六类必需测试
 
@@ -65,7 +65,9 @@ INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27017' make integration
 
 使用默认本地实例时不必单独准备环境变量文件。
 
-## 3. 实际执行结果（2026-10-18）
+## 3. 历史基线执行结果（2026-10-18）
+
+以下是第二阶段开发前的执行记录，不能作为新增题库、版本和跨问卷统计的验证结果。
 
 | 检查 | 本轮结果 |
 | --- | --- |
@@ -92,8 +94,52 @@ RUN_E2E=1 PLAYWRIGHT_EXECUTABLE_PATH=/tmp/survey-review-runtime/chrome-headless-
 
 语句覆盖率的范围由 `-coverpkg=./internal/...` 确定，汇总工具为 `go tool cover`；前端测试及浏览器场景数另行统计。覆盖率用于说明本轮测试触及的 Go 语句范围，不等同于全部功能和边界已经穷尽。
 
-## 5. 历史执行中遇到的环境问题
+## 4. 历史执行中遇到的环境问题
 
 开始移除 Python 辅助脚本后，`make integration` 曾连接 `127.0.0.1:27018` 失败。原因是 MongoDB 容器尚未启动，后来在 Makefile 中加入自动启动与健康检查，并在测试支持代码中增加连接预检。重新运行后，数据库测试通过。
 
 首次执行 `make e2e` 时，Node.js 报缺少 `playwright` 模块；安装项目的 npm 依赖和 Chromium 后重新执行，浏览器测试 7/7 通过。这些错误属于环境准备问题，不应写作问卷业务逻辑测试失败。
+
+## 5. 题库与版本功能的回归范围
+
+新增测试继续放在 `tests/`，直接复用原有服务、测试数据库与 HTTP 客户端支持。领域单元测试隔离检查规则，集成测试通过真实 MongoDB 验证持久化、权限、并发和聚合；前端测试检查交互逻辑，浏览器测试覆盖用户实际操作链路。
+
+| 场景 | 检查点 | 主要测试 |
+| --- | --- | --- |
+| 复用与版本隔离 | 同一版本选入不同问卷；发布后派生新版本，旧问卷快照不变 | `TestLibraryReuseImmutableHistoryAndRestore` |
+| 历史、分支与恢复 | 从历史版本派生；保留父版本；恢复生成新版本及恢复来源 | 同上 |
+| 指定用户共享 | 作者授权、接收者使用、第三人无权；撤销后不能新增引用，原快照仍有效；篡改来源内容被拒绝 | `TestLibrarySharingRevocationAndSnapshotIntegrity` |
+| 题库固定项 | 创建、添加/移除/替换版本，检查旧修订冲突；删除题库后版本仍在 | `TestLibraryQuestionBankCRUDPinsAndConflicts` |
+| 使用情况与统计权限 | 作者只能看到他人引用总量；所有人的答案统计只来自本人问卷 | `TestLibraryUsagePrivacyAndWeightedNumericStats` |
+| 数值汇总与分布 | 不同问卷不同样本数，验证全部答案的平均值；分桶回答数与实际回答数一致 | 同上 |
+| 版本隔离及分页 | 不同题型版本分别统计；限定版本后原始答案分页，非法分页参数被拒绝 | `TestLibraryStatsVersionSeparationAndRawPagination` |
+| 并发版本 | 并发创建版本，编号唯一、父版本关系保留，历史不会被覆盖 | `TestLibraryConcurrentVersionAllocation` |
+| 创建中断恢复 | 完整 v1 的待就绪题目恢复可见，缺少 v1 的题目仍隐藏，重复初始化安全 | `TestLibraryInitRecoversOnlyCompletePendingFamilies` |
+| 版本分配空号 | 模拟已分配编号但版本未插入，读取与后续创建仍使用实际存在的最新版本 | `TestLibraryVersionAllocationGapsKeepLatestReadable` |
+| 长文本集合 | 600 条各含 10,000 个汉字的回答，统计总量准确、页面有界，避免大关联结果失败 | `TestLibraryStatsLargeTextDatasetRemainsPaged` |
+
+`tests/unit/library_test.go` 覆盖可复用题目校验、内容比较及题库约束，重点检查跳转规则/来源不能嵌套、不可修改的内容字段、重复固定项和长度上限。历史数据兼容、匿名去重、长答卷、原统计、归档与重开继续由既有测试保护。
+
+运行全部新增与既有核心测试沿用 `make verify`，浏览器测试沿用 `make e2e`。只定位题库集成测试时，可执行：
+
+~~~sh
+INTEGRATION_MONGO_URI='mongodb://127.0.0.1:27019/?directConnection=true' \
+  go test -count=1 -race -v ./tests/integration -run '^TestLibrary'
+~~~
+
+其中 27019 是本次验证使用的临时实例端口，可替换为自己的 MongoDB 地址；项目默认配置仍由 Makefile 管理。
+
+## 6. 第二阶段执行记录（2026-10-22）
+
+本次 WSL 环境的 Docker 集成不可用，默认 `make integration` 无法启动容器。改用 `/tmp` 中独立启动的 MongoDB 8.0.16，通过 `INTEGRATION_MONGO_URI` 指定 27019 端口进行真实数据库验证。未使用正常业务数据库，也未修改项目默认连接配置。
+
+| 检查 | 已获得的实际证据 |
+| --- | --- |
+| `make test` | Go 单元测试通过；直接运行 Node 测试确认前端 31/31 通过 |
+| `make vet`、`make build` | 通过 |
+| Chromium E2E 与 Go `-race` | 原有 6 个业务场景和新增 6 个业务场景全部通过；含 2 个父测试共 14 项，Go E2E 执行 16.617 秒，无页面脚本错误 |
+| 真实 MongoDB 集成与 `-race` | 完整 `make integration` 通过：18 个单元、19 个集成顶层测试（含新增 9 个题库集成测试，子测试另计）；单元包 6.274 秒、集成包 49.294 秒 |
+| 并发初始化专项 | 修复后以 `-count=5 -race` 重复 5 次全部通过，执行 2.386 秒 |
+| `go tool cover -func=coverage.out` | 核心包合并语句覆盖率 **83.1%**，统计范围为 `./internal/...` |
+
+首轮数据库测试发现并发 `Init()` 时，Schema 更新可能与另一个初始化过程正在创建的索引冲突。修复限定为 MongoDB 索引构建冲突错误的可取消重试，随后复跑既有并发初始化回归及全套集成测试。修复后完整集成测试通过，使用本节的本轮覆盖率，不沿用上节历史覆盖率。
