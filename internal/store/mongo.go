@@ -59,7 +59,7 @@ func (s *Store) Init(ctx context.Context) error {
 			if !errors.As(err, &commandError) || commandError.Code != 48 {
 				return fmt.Errorf("create %s: %w", name, err)
 			}
-			if err := s.db.RunCommand(ctx, bson.D{{Key: "collMod", Value: name}, {Key: "validator", Value: validator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+			if err := s.setValidator(ctx, name, validator); err != nil {
 				return fmt.Errorf("validate %s: %w", name, err)
 			}
 		}
@@ -80,7 +80,32 @@ func (s *Store) Init(ctx context.Context) error {
 	}
 	// The unique index must exist before any legacy keys are added. It also
 	// arbitrates concurrent initializers and preserves already-keyed responses.
-	return s.backfillLegacyDedupeKeys(ctx)
+	if err := s.backfillLegacyDedupeKeys(ctx); err != nil {
+		return err
+	}
+	return s.initLibrary(ctx)
+}
+
+// Concurrent startup can encounter another initializer's index build. Reapplying
+// this validator is idempotent; only those specific DDL conflicts are retried.
+func (s *Store) setValidator(ctx context.Context, name string, validator bson.M) error {
+	delay := 20 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		err := s.db.RunCommand(ctx, bson.D{{Key: "collMod", Value: name}, {Key: "validator", Value: validator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err()
+		var serverError mongo.ServerError
+		if err == nil || attempt >= 19 || !errors.As(err, &serverError) ||
+			(!serverError.HasErrorCode(12587) && !serverError.HasErrorCode(12586)) {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, 200*time.Millisecond)
+	}
 }
 
 // backfillLegacyDedupeKeys restores the no-repeat policy for historical answers
@@ -174,6 +199,7 @@ func collectionSchemas() map[string]bson.M {
 	rule := bson.M{"bsonType": "object", "required": bson.A{"operator", "value", "target"}, "properties": bson.M{"operator": str, "target": str}}
 	question := bson.M{"bsonType": "object", "required": bson.A{"id", "title", "type", "required", "validation"}, "properties": bson.M{
 		"id": bson.M{"bsonType": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}, "title": str,
+		"sourceQuestionId": str, "sourceVersionId": str,
 		// The editor saves fill + fillType; the API also accepts legacy text/number types.
 		"type": bson.M{"enum": bson.A{"single", "multiple", "fill", "text", "number"}}, "fillType": bson.M{"enum": bson.A{"text", "number"}}, "required": boolean,
 		"options": bson.M{"bsonType": bson.A{"array", "null"}, "items": option},

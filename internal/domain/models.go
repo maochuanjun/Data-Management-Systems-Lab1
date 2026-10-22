@@ -26,14 +26,16 @@ type Survey struct {
 }
 
 type Question struct {
-	ID         string     `json:"id" bson:"id"`
-	Title      string     `json:"title" bson:"title"`
-	Type       string     `json:"type" bson:"type"` // single, multiple, fill (legacy: text, number)
-	FillType   string     `json:"fillType,omitempty" bson:"fillType,omitempty"` // text or number for fill
-	Required   bool       `json:"required" bson:"required"`
-	Options    []Option   `json:"options" bson:"options"`
-	Validation Validation `json:"validation" bson:"validation"`
-	Rules      []Rule     `json:"rules" bson:"rules"`
+	SourceQuestionID string     `json:"sourceQuestionId,omitempty" bson:"sourceQuestionId,omitempty"`
+	SourceVersionID  string     `json:"sourceVersionId,omitempty" bson:"sourceVersionId,omitempty"`
+	ID               string     `json:"id" bson:"id"`
+	Title            string     `json:"title" bson:"title"`
+	Type             string     `json:"type" bson:"type"`                             // single, multiple, fill (legacy: text, number)
+	FillType         string     `json:"fillType,omitempty" bson:"fillType,omitempty"` // text or number for fill
+	Required         bool       `json:"required" bson:"required"`
+	Options          []Option   `json:"options" bson:"options"`
+	Validation       Validation `json:"validation" bson:"validation"`
+	Rules            []Rule     `json:"rules" bson:"rules"`
 }
 type Option struct {
 	ID    string `json:"id" bson:"id"`
