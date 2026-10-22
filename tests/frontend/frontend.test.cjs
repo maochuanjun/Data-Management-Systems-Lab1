@@ -98,7 +98,7 @@ async function browser(handler) {
       createTextNode: (value) =>
         Object.assign(new Element("#text"), {textContent: String(value)}),
     },
-    window: {addEventListener() {}, scrollTo() {}},
+    window: {addEventListener() {}, scrollTo() {}, confirm: () => true},
     location: {pathname: "/login", search: "", origin: "http://localhost"},
     history: {
       pushState(_state, _unused, url) {
@@ -1099,3 +1099,249 @@ for (const operation of ["version", "restore"]) {
     assert.equal(text(ui.nodes["#notice"]), "New page notice");
   });
 }
+
+function libraryField(form, label) {
+  const field = walk(form).find((node) => node.tag === "label"
+    && node.children[0] && text(node.children[0]) === label);
+  assert.ok(field, `${label} field exists`);
+  return field.children[1];
+}
+function libraryWrites(ui) {
+  return ui.calls.filter((request) => request.method !== "GET");
+}
+function recordConfirmations(ui, accepted = false) {
+  const messages = [];
+  ui.context.window.confirm = (message) => { messages.push(message); return accepted; };
+  return messages;
+}
+
+for (const dirtyField of ["title", "note", "validation", "options"]) {
+  test(`canceling restore preserves the unsaved ${dirtyField} and sharing draft without a write`, async () => {
+    const ui = await libraryBrowser(() => ({}), (request) => {
+      if (dirtyField !== "options" || !request.url.endsWith("/versions")) return undefined;
+      return libraryVersions().map((version) => ({...version,
+        question: {...version.question, type: "single", fillType: undefined,
+          options: [{id: "one", label: "One"}, {id: "two", label: "Two"}]},
+      }));
+    });
+    const root = ui.root;
+    await click(findButton(root, "基于此版本编辑"));
+    const form = libraryForm(root);
+    let changed;
+    if (dirtyField === "title") {
+      changed = titleField(form); change(changed, "Unsaved title");
+    } else if (dirtyField === "note") {
+      changed = libraryField(form, "版本说明"); change(changed, "Unsaved explanation");
+    } else if (dirtyField === "validation") {
+      changed = libraryField(form, "最少字符数"); change(changed, "7");
+    } else {
+      changed = walk(form).find((node) => node["aria-label"] === "选项文字");
+      change(changed, "Unsaved option");
+    }
+    // The version form alone must trigger protection, even with unchanged sharing.
+    const messages = recordConfirmations(ui);
+    const expected = changed.value;
+    await click(findButton(root, "恢复此版本"));
+    assert.equal(messages.length, 1);
+    assert.equal(libraryWrites(ui).length, 0);
+    assert.equal(ui.nodes["#app"].children[0], root);
+    assert.equal(libraryForm(root), form);
+    assert.equal(form.parent.hidden, false);
+    assert.equal(changed.value, expected);
+    assert.equal(disabled(changed), false);
+    // With both drafts present, cancellation must preserve both as well.
+    change(sharingInput(root), "reader, outsider");
+    await click(findButton(root, "恢复此版本"));
+    assert.equal(messages.length, 2);
+    assert.equal(libraryWrites(ui).length, 0);
+    assert.equal(changed.value, expected);
+    assert.equal(sharingInput(root).value, "reader, outsider");
+  });
+}
+
+test("accepting restore after editing creates a restored version only after confirmation", async () => {
+  const ui = await libraryBrowser(() => ({}));
+  const root = ui.root;
+  await click(findButton(root, "基于此版本编辑"));
+  change(titleField(libraryForm(root)), "Discard this draft");
+  let confirmations = 0;
+  ui.context.window.confirm = () => {
+    confirmations++;
+    assert.equal(libraryWrites(ui).length, 0, "confirmation precedes the write");
+    return true;
+  };
+  await click(findButton(root, "恢复此版本"));
+  assert.equal(confirmations, 1);
+  assert.equal(libraryWrites(ui).length, 1);
+  assert.equal(libraryWrites(ui)[0].url, "/api/questions/s/restore");
+  assert.equal(libraryWrites(ui)[0].body.versionId, "v2");
+  assert.notEqual(ui.nodes["#app"].children[0], root);
+  assert.match(text(ui.nodes["#notice"]), /已将历史内容恢复为新版本/);
+});
+
+test("an unsaved sharing list blocks restore but not opening or canceling a clean version editor", async () => {
+  const ui = await libraryBrowser(() => ({}));
+  const root = ui.root, messages = recordConfirmations(ui);
+  change(sharingInput(root), "reader, outsider");
+  await click(findButton(root, "基于此版本编辑"));
+  const form = libraryForm(root);
+  const editor = form.parent;
+  await click(findButton(root, "取消编辑"));
+  assert.equal(editor.hidden, true);
+  assert.equal(messages.length, 0);
+  await click(findButton(root, "恢复此版本"));
+  assert.equal(messages.length, 1);
+  assert.equal(libraryWrites(ui).length, 0);
+  assert.equal(sharingInput(root).value, "reader, outsider");
+});
+
+test("switching version or canceling editing asks before discarding an unsaved editor", async () => {
+  for (const action of ["switch", "cancel"]) {
+    const ui = await libraryBrowser(() => ({}));
+    const root = ui.root;
+    await click(findButton(root, "基于此版本编辑"));
+    const form = libraryForm(root);
+    const editor = form.parent;
+    change(titleField(form), "Keep editing this title");
+    change(libraryField(form, "版本说明"), "Keep this note");
+    change(sharingInput(root), "reader, outsider");
+    const target = action === "switch"
+      ? walk(root).filter((node) => node.tag === "button" && text(node) === "基于此版本编辑")[1]
+      : findButton(root, "取消编辑");
+    const rejected = recordConfirmations(ui);
+    await click(target);
+    assert.equal(rejected.length, 1);
+    assert.equal(libraryForm(root), form);
+    assert.equal(form.parent.hidden, false);
+    assert.equal(titleField(form).value, "Keep editing this title");
+    assert.equal(libraryField(form, "版本说明").value, "Keep this note");
+    const accepted = recordConfirmations(ui, true);
+    await click(target);
+    assert.equal(accepted.length, 1);
+    if (action === "switch") assert.equal(titleField(libraryForm(root)).value, "Version 1");
+    else {
+      assert.equal(editor.hidden, true);
+      await click(findButton(root, "基于此版本编辑"));
+      assert.equal(titleField(libraryForm(root)).value, "Version 2");
+      assert.equal(libraryField(libraryForm(root), "版本说明").value, "");
+      assert.equal(accepted.length, 1, "discarded editor no longer causes another confirmation");
+    }
+    assert.equal(sharingInput(root).value, "reader, outsider");
+    assert.equal(libraryWrites(ui).length, 0);
+  }
+});
+
+test("saving a new version confirms loss of an unsaved sharing list and retains both drafts when canceled", async () => {
+  const ui = await libraryBrowser(() => ({}));
+  const root = ui.root;
+  await click(findButton(root, "基于此版本编辑"));
+  const form = libraryForm(root);
+  change(titleField(form), "New version title");
+  change(libraryField(form, "版本说明"), "New version note");
+  change(sharingInput(root), "reader, outsider");
+  const rejected = recordConfirmations(ui);
+  await submitForm(form);
+  assert.equal(rejected.length, 1);
+  assert.equal(libraryWrites(ui).length, 0);
+  assert.equal(titleField(form).value, "New version title");
+  assert.equal(libraryField(form, "版本说明").value, "New version note");
+  assert.equal(sharingInput(root).value, "reader, outsider");
+  assert.equal(disabled(titleField(form)), false);
+  const accepted = recordConfirmations(ui, true);
+  await submitForm(form);
+  assert.equal(accepted.length, 1);
+  assert.equal(libraryWrites(ui).length, 1);
+  const request = libraryWrites(ui)[0];
+  assert.equal(request.url, "/api/questions/s/versions");
+  assert.equal(request.body.question.title, "New version title");
+  assert.equal(request.body.note, "New version note");
+  assert.equal(request.body.baseVersionId, "v2");
+});
+
+test("clean forms and changes reverted to their original values do not prompt on restore", async () => {
+  for (const scenario of ["clean", "revert", "reordered constraints"]) {
+    const ui = await libraryBrowser(() => ({}), (request) => {
+      if (scenario !== "reordered constraints" || !request.url.endsWith("/versions")) return undefined;
+      return libraryVersions().map((version) => ({...version,
+        question: {...version.question, validation: {minLength: 2, maxLength: 20}},
+      }));
+    });
+    const root = ui.root;
+    await click(findButton(root, "基于此版本编辑"));
+    const form = libraryForm(root);
+    if (scenario === "revert") {
+      change(titleField(form), "Temporary title");
+      change(titleField(form), "Version 2");
+      change(libraryField(form, "版本说明"), "Temporary note");
+      change(libraryField(form, "版本说明"), "");
+      change(libraryField(form, "最少字符数"), "7");
+      change(libraryField(form, "最少字符数"), "");
+      change(sharingInput(root), "outsider");
+      change(sharingInput(root), "reader");
+    } else if (scenario === "reordered constraints") {
+      change(libraryField(form, "最少字符数"), "");
+      change(libraryField(form, "最多字符数"), "");
+      change(libraryField(form, "最多字符数"), "20");
+      change(libraryField(form, "最少字符数"), "2");
+    }
+    const messages = recordConfirmations(ui);
+    await click(findButton(root, "恢复此版本"));
+    assert.equal(messages.length, 0);
+    assert.equal(libraryWrites(ui).length, 1);
+    assert.equal(libraryWrites(ui)[0].url, "/api/questions/s/restore");
+  }
+});
+
+test("saving sharing retains the version draft and updates the sharing baseline for the next version save", async () => {
+  const ui = await libraryBrowser((request) => request.url.endsWith("/sharing")
+    ? {...libraryTemplate(), sharedUsernames: ["alice"], sharingRevision: 4} : ({}));
+  const root = ui.root;
+  await click(findButton(root, "基于此版本编辑"));
+  const form = libraryForm(root);
+  change(titleField(form), "Still editing my version");
+  change(sharingInput(root), "alice");
+  const messages = recordConfirmations(ui);
+  await click(findButton(root, "保存共享设置"));
+  assert.equal(messages.length, 0);
+  assert.equal(libraryForm(root), form);
+  assert.equal(titleField(form).value, "Still editing my version");
+  assert.equal(sharingInput(root).value, "alice");
+  await submitForm(form);
+  assert.equal(messages.length, 0, "saving its own draft does not require discard confirmation");
+  assert.deepEqual(libraryWrites(ui).map((request) => request.url), [
+    "/api/questions/s/sharing", "/api/questions/s/versions",
+  ]);
+});
+
+test("reverting fill types ignores API default values but still protects removed constraints", async () => {
+  for (const fillType of ["text", "number"]) {
+    for (const [constrained, switchQuestionType] of [[false, false], [true, false], [false, true], [true, true]]) {
+      const ui = await libraryBrowser(() => ({}), (request) => {
+        if (!request.url.endsWith("/versions")) return undefined;
+        const validation = {integer: false};
+        if (constrained) Object.assign(validation, fillType === "text"
+          ? {minLength: 2, maxLength: 20} : {min: 2, max: 20});
+        return libraryVersions().map((version) => ({...version,
+          question: {...version.question, fillType, options: null, validation},
+        }));
+      });
+      const root = ui.root;
+      await click(findButton(root, "基于此版本编辑"));
+      const form = libraryForm(root);
+      if (switchQuestionType) {
+        change(libraryField(form, "题目类型"), "single", "change");
+        change(libraryField(form, "题目类型"), "fill", "change");
+      } else change(libraryField(form, "填空内容"), fillType === "text" ? "number" : "text", "change");
+      change(libraryField(form, "填空内容"), fillType, "change");
+      const messages = recordConfirmations(ui);
+      await click(findButton(root, "恢复此版本"));
+      assert.equal(messages.length, constrained ? 1 : 0,
+        `${fillType}, ${switchQuestionType ? "question type" : "fill subtype"}: ${constrained ? "lost constraints need protection" : "unchanged visible settings need no confirmation"}`);
+      assert.equal(libraryWrites(ui).length, constrained ? 0 : 1);
+      if (constrained) {
+        assert.equal(libraryForm(root), form);
+        assert.equal(libraryField(form, "填空内容").value, fillType);
+      }
+    }
+  }
+});
