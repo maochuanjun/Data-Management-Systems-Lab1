@@ -50,17 +50,20 @@ type Repository interface {
 var assets embed.FS
 
 type Server struct {
-	repo   Repository
-	secure bool
-	log    *slog.Logger
+	repo    Repository
+	library LibraryRepository
+	secure  bool
+	log     *slog.Logger
 }
 
 func New(repo Repository, secure bool) http.Handler {
 	s := &Server{repo: repo, secure: secure, log: slog.Default()}
+	s.library, _ = repo.(LibraryRepository)
 	m := http.NewServeMux()
 	m.HandleFunc("POST /api/register", s.register)
 	m.HandleFunc("POST /api/login", s.login)
 	m.HandleFunc("POST /api/logout", s.logout)
+	s.libraryRoutes(m)
 	m.HandleFunc("GET /api/me", s.me)
 	m.HandleFunc("GET /api/surveys", s.list)
 	m.HandleFunc("POST /api/surveys", s.create)
@@ -343,6 +346,9 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if !s.validateQuestionSources(w, r, &survey, nil, u.ID) {
+		return
+	}
 	if err := s.repo.CreateSurvey(r.Context(), &survey); err != nil {
 		s.dbError(w, err)
 		return
@@ -379,6 +385,9 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := domain.ValidateSurvey(&survey); err != nil {
 		fail(w, 400, err.Error())
+		return
+	}
+	if !s.validateQuestionSources(w, r, &survey, old, old.OwnerID) {
 		return
 	}
 	if err := s.repo.UpdateDraft(r.Context(), &survey, expected); err != nil {
