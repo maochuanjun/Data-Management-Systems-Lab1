@@ -37,6 +37,10 @@ class Element {
     this.children = [];
     this.append(...children);
   }
+  querySelectorAll(selector) {
+    const tags = selector.split(",");
+    return walk(this).slice(1).filter((node) => tags.includes(node.tag));
+  }
   addEventListener(event, listener) {
     this.listeners[event] = listener;
   }
@@ -939,5 +943,159 @@ for (const fillType of ["text", "number"]) {
       ui.calls.find((c) => c.url.endsWith("/responses")).body.answers,
       {q: expected},
     );
+  });
+}
+
+
+function libraryTemplate() {
+  return {id: "s", ownerId: "owner", sharedUsernames: ["reader"], sharingRevision: 3,
+    latestVersion: libraryVersions()[1]};
+}
+function libraryVersions() {
+  return [1, 2].map((version) => ({id: `v${version}`, version,
+    createdAt: "2026-01-01T00:00:00Z", question: {
+      id: "template", title: `Version ${version}`, type: "fill", fillType: "text",
+      required: true, validation: {}, options: [], rules: [],
+    }}));
+}
+async function libraryBrowser(mutate, read = () => undefined) {
+  const ui = await browser((request) => {
+    if (request.method !== "GET") return mutate(request);
+    const override = read(request);
+    if (override !== undefined) return override;
+    if (request.url.endsWith("/versions")) return libraryVersions();
+    if (request.url.endsWith("/usage")) return {ownSurveyCount: 0, surveys: []};
+    if (request.url.includes("/stats?")) return {surveyCount: 0, totalAnswers: 0, versions: []};
+    return libraryTemplate();
+  });
+  vm.runInContext('user = {id: "owner", username: "owner"}', ui.context);
+  ui.context.location.pathname = "/questions/s";
+  await vm.runInContext("render()", ui.context);
+  ui.root = ui.nodes["#app"].children[0];
+  return ui;
+}
+function submitForm(form) {
+  return form.listeners.submit({preventDefault() {}});
+}
+function libraryForm(root) {
+  return walk(root).find((node) => node.tag === "form");
+}
+function sharingInput(root) {
+  return walk(root).find((node) => node["aria-label"] === "共享用户名");
+}
+function assertLibraryLocked(root) {
+  for (const control of walk(root).filter((node) =>
+    ["input", "select", "button"].includes(node.tag))) {
+    assert.equal(disabled(control), true, `${text(control) || control.value} is locked`);
+  }
+}
+
+for (const operation of ["version", "restore", "sharing"]) {
+  test(`library ${operation} request locks related actions and preserves drafts after failure`, async () => {
+    const pending = deferred();
+    const ui = await libraryBrowser(() => pending.promise);
+    const root = ui.root;
+    await click(findButton(root, "基于此版本编辑"));
+    const form = libraryForm(root);
+    change(titleField(form), "Keep my version draft");
+    change(sharingInput(root), "reader, outsider");
+    const saving = operation === "version" ? submitForm(form)
+      : click(findButton(root, operation === "restore" ? "恢复此版本" : "保存共享设置"));
+    assertLibraryLocked(root);
+    await click(findButton(root, "取消编辑"));
+    await click(findButton(root, "基于此版本编辑"));
+    await click(findButton(root, "恢复此版本"));
+    await click(findButton(root, "保存共享设置"));
+    await submitForm(form); // A second submit event must also be ignored.
+    change(titleField(form), "Should not replace the draft");
+    change(sharingInput(root), "Should not change permissions");
+    assert.equal(ui.calls.filter((call) => call.method !== "GET").length, 1);
+    pending.reject(new Error("Temporary write failure"));
+    await saving;
+    assert.equal(libraryForm(root), form);
+    assert.equal(titleField(form).value, "Keep my version draft");
+    assert.equal(sharingInput(root).value, "reader, outsider");
+    assert.equal(disabled(titleField(form)), false);
+    assert.equal(disabled(sharingInput(root)), false);
+    assert.match(text(ui.nodes["#notice"]), /Temporary write failure/);
+  });
+}
+
+test("sharing uses the observed revision and synchronizes the successful server result", async () => {
+  let pending = deferred();
+  const ui = await libraryBrowser(() => pending.promise);
+  const root = ui.root, names = sharingInput(root);
+  change(names, " alice, alice ");
+  const saving = click(findButton(root, "保存共享设置"));
+  assert.equal(disabled(names), true);
+  change(names, "bob");
+  assert.deepEqual(ui.calls.at(-1).body, {usernames: ["alice", "alice"], sharingRevision: 3});
+  pending.resolve({...libraryTemplate(), sharedUsernames: ["alice"], sharingRevision: 4});
+  await saving;
+  assert.equal(names.value, "alice");
+  assert.equal(disabled(names), false);
+  assert.match(text(ui.nodes["#notice"]), /共享设置已保存/);
+  pending = deferred();
+  change(names, "bob");
+  const second = click(findButton(root, "保存共享设置"));
+  assert.equal(ui.calls.at(-1).body.sharingRevision, 4);
+  pending.reject(new Error("共享设置已被其他页面修改，请刷新后检查共享名单"));
+  await second;
+  assert.equal(names.value, "bob");
+  assert.match(text(ui.nodes["#notice"]), /刷新/);
+  assert.equal(ui.calls.filter((call) => call.method === "PUT").length, 2);
+});
+
+for (const operation of ["version", "restore", "sharing"]) {
+  for (const outcome of ["resolve", "reject"]) {
+    test(`obsolete ${operation} ${outcome} response cannot refresh or notify a new route`, async () => {
+      const pending = deferred();
+      const ui = await libraryBrowser(() => pending.promise);
+      const root = ui.root;
+      let saving;
+      if (operation === "version") {
+        await click(findButton(root, "基于此版本编辑"));
+        saving = submitForm(libraryForm(root));
+      } else saving = click(findButton(root, operation === "restore" ? "恢复此版本" : "保存共享设置"));
+      ui.context.location.pathname = "/login";
+      await vm.runInContext("render()", ui.context);
+      const newPage = ui.nodes["#app"].children[0];
+      vm.runInContext('show("New page notice", true)', ui.context);
+      if (outcome === "resolve") pending.resolve({...libraryTemplate(), sharingRevision: 4});
+      else pending.reject(new Error("Old page failure"));
+      await saving;
+      assert.equal(ui.nodes["#app"].children[0], newPage);
+      assert.equal(text(ui.nodes["#notice"]), "New page notice");
+    });
+  }
+}
+
+
+for (const operation of ["version", "restore"]) {
+  test(`${operation} refresh stays locked and cannot notify a route opened during refresh`, async () => {
+    const pending = deferred(), refreshedVersions = deferred();
+    let refreshing = false;
+    const ui = await libraryBrowser(async () => {
+      await pending.promise;
+      refreshing = true;
+      return {};
+    }, (request) => refreshing && request.url.endsWith("/versions")
+      ? refreshedVersions.promise : undefined);
+    const root = ui.root;
+    await click(findButton(root, "基于此版本编辑"));
+    const saving = operation === "version" ? submitForm(libraryForm(root))
+      : click(findButton(root, "恢复此版本"));
+    pending.resolve({});
+    await flush();
+    assertLibraryLocked(root);
+    assert.match(text(ui.nodes["#app"]), /正在加载/);
+    ui.context.location.pathname = "/login";
+    await vm.runInContext("render()", ui.context);
+    const newPage = ui.nodes["#app"].children[0];
+    vm.runInContext('show("New page notice", true)', ui.context);
+    refreshedVersions.resolve(libraryVersions());
+    await saving;
+    assert.equal(ui.nodes["#app"].children[0], newPage);
+    assert.equal(text(ui.nodes["#notice"]), "New page notice");
   });
 }

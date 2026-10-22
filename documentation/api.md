@@ -147,7 +147,7 @@ reopen 可以提交空对象以沿用未过期的截止时间，或以 deadline:
 | POST | /api/questions/{id}/versions | 从指定父版本派生新版本，返回 201 |
 | GET | /api/question-versions/{id} | 读取一个不可变版本 |
 | POST | /api/questions/{id}/restore | 复制历史内容为新版本，返回 201 |
-| PUT | /api/questions/{id}/sharing | 按用户名整体替换共享名单 |
+| PUT | /api/questions/{id}/sharing | 按用户名整体替换共享名单，要求 `sharingRevision` 匹配 |
 
 创建题目的请求：
 
@@ -171,7 +171,9 @@ reopen 可以提交空对象以沿用未过期的截止时间，或以 deadline:
 
 恢复请求为 `{"versionId":"历史版本ID","note":"恢复说明"}`。返回的新版本内容取自指定历史版本，`parentVersionId` 指向恢复时读到的最新版本，`restoredFromVersionId` 指向历史来源。旧版本及已引用它的问卷不会被覆盖。
 
-共享请求为 `{"usernames":["bob","carol"]}`，最多 100 名已注册用户；空数组撤销全部共享。作者可读到 `sharedWith` 和 `sharedUsernames`，接收者看不到其他接收者名单。授权共享题目不等于授权访问作者的问卷或答卷。
+共享请求为 `{"usernames":["bob","carol"],"sharingRevision":0}`，最多 100 名已注册用户；空数组撤销全部共享。`sharingRevision` 从读取题目的响应获取，新建题目为 0；它独立于题目内容的版本号。每次成功保存共享名单后递增，响应返回更新后的题目、版本号和规范化用户名。缺失、null 或非法版本号返回 400；旧版本保存返回 409，名单保持不变，客户端需刷新并核对权限后重新提交，不能自动重试旧名单。已存在但没有该字段的题目按版本 0 处理，首次成功保存时原子写入版本 1。
+
+作者可读到 `sharedWith` 和 `sharedUsernames`，接收者看不到其他接收者名单。授权共享题目不等于授权访问作者的问卷或答卷。
 
 ### 在问卷中引用版本
 

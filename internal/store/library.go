@@ -20,6 +20,7 @@ func (s *Store) initLibrary(ctx context.Context) error {
 	schemas := map[string]bson.M{
 		"question_templates": {"bsonType": "object", "required": bson.A{"_id", "ownerId", "sharedWith", "nextVersion", "ready", "createdAt"}, "properties": bson.M{
 			"_id": str, "ownerId": str, "sharedWith": strings, "nextVersion": integer, "ready": bson.M{"bsonType": "bool"}, "createdAt": bson.M{"bsonType": "date"},
+			"sharingRevision": bson.M{"bsonType": bson.A{"int", "long"}, "minimum": 0},
 		}},
 		"question_versions": {"bsonType": "object", "required": bson.A{"_id", "questionId", "version", "question", "note", "createdAt"}, "properties": bson.M{
 			"_id": str, "questionId": str, "version": integer, "parentVersionId": str, "restoredFromVersionId": str, "question": question, "note": str, "createdAt": bson.M{"bsonType": "date"},
@@ -195,13 +196,25 @@ func (s *Store) CreateQuestionVersion(ctx context.Context, questionID, ownerID s
 	return translate(err)
 }
 
-func (s *Store) SetQuestionSharing(ctx context.Context, id, owner string, sharedWith []string) error {
-	result, err := s.db.Collection("question_templates").UpdateOne(ctx, bson.M{"_id": id, "ownerId": owner, "ready": true}, bson.M{"$set": bson.M{"sharedWith": sharedWith}})
+func (s *Store) SetQuestionSharing(ctx context.Context, id, owner string, sharedWith []string, expectedRevision int) error {
+	filter := bson.M{"_id": id, "ownerId": owner, "ready": true}
+	if expectedRevision == 0 {
+		// Older templates have no sharingRevision. Treat absence as zero and
+		// create the counter in the same atomic write that changes permissions.
+		filter["$or"] = bson.A{bson.M{"sharingRevision": 0}, bson.M{"sharingRevision": bson.M{"$exists": false}}}
+	} else {
+		filter["sharingRevision"] = expectedRevision
+	}
+	result, err := s.db.Collection("question_templates").UpdateOne(ctx, filter, bson.M{"$set": bson.M{"sharedWith": sharedWith}, "$inc": bson.M{"sharingRevision": 1}})
 	if err != nil {
 		return translate(err)
 	}
 	if result.MatchedCount == 0 {
-		return ErrNotFound
+		err := s.db.Collection("question_templates").FindOne(ctx, bson.M{"_id": id, "ownerId": owner, "ready": true}, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
+		if err != nil {
+			return translate(err)
+		}
+		return ErrConflict
 	}
 	return nil
 }

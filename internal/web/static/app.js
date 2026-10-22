@@ -514,7 +514,8 @@ function newLibraryQuestion(type='single') {
     options:['single','multiple'].includes(type)?[{id:identifier('o'),label:'选项 1'},{id:identifier('o'),label:'选项 2'}]:[]};
 }
 function questionContentForm(initial,submit,label='保存题目') {
-  let question=reusableQuestion(initial),note='';
+  let question=reusableQuestion(initial),note='',submitting=false;
+  const generation=routeGeneration;
   const form=el('form',{class:'card'});
   function paint(){
     form.replaceChildren(field('题目类型',select(Object.entries(typeNames),question.type,type=>{
@@ -540,9 +541,11 @@ function questionContentForm(initial,submit,label='保存题目') {
   }
   form.addEventListener('submit',async event=>{
     event.preventDefault();
+    if(submitting||generation!==routeGeneration)return;
+    submitting=true;
     const controls=Array.from(form.querySelectorAll('input,select,button'));controls.forEach(control=>control.disabled=true);
-    try{await submit(reusableQuestion(question),note);}catch(error){show(error.message);}
-    finally{controls.forEach(control=>control.disabled=false);}
+    try{await submit(reusableQuestion(question),note);}catch(error){if(generation===routeGeneration)show(error.message);}
+    finally{submitting=false;controls.forEach(control=>control.disabled=false);}
   });
   paint();return form;
 }
@@ -572,15 +575,34 @@ async function libraryView(){
   return root;
 }
 async function libraryQuestionView(id){
+  const generation=routeGeneration;let busy=false;
   const [template,versions]=await Promise.all([api('/api/questions/'+id),api('/api/questions/'+id+'/versions')]);
   const owner=template.ownerId===user.id,byID=new Map(versions.map(version=>[version.id,version]));
-  const root=el('div',{},hero(template.latestVersion?.question.title||'题目详情','版本内容永久保留。新版本与历史分支分别统计。',link('← 我的题目','/questions')));
+  const root=el('fieldset',{class:'library-root'},hero(template.latestVersion?.question.title||'题目详情','版本内容永久保留。新版本与历史分支分别统计。',link('← 我的题目','/questions')));
   const editor=el('section',{hidden:true});
   root.append(editor);
+  // Version refreshes and permission writes share one lock so an older response
+  // cannot discard a newer draft or report a different sharing list as saved.
+  async function mutate(action,message,refresh=false){
+    if(busy||generation!==routeGeneration)return;
+    busy=true;root.disabled=true;
+    try{
+      await action();
+      if(generation!==routeGeneration)return;
+      if(refresh){
+        const refreshedGeneration=routeGeneration+1;
+        await render();
+        if(refreshedGeneration!==routeGeneration)return;
+      }
+      show(message,true);
+    }catch(error){if(generation===routeGeneration)show(error.message);}
+    finally{busy=false;root.disabled=false;}
+  }
   function editVersion(version){
+    if(busy||generation!==routeGeneration)return;
     editor.hidden=false;editor.replaceChildren(el('h2',{},`基于 v${version.version} 创建新版本`),questionContentForm(version.question,async(question,note)=>{
-      await api('/api/questions/'+id+'/versions','POST',{baseVersionId:version.id,question,note});await render();show('新版本已创建，已有问卷引用保持原样',true);
-    },'保存新版本'),button('取消编辑',()=>{editor.hidden=true;}));
+      await mutate(()=>api('/api/questions/'+id+'/versions','POST',{baseVersionId:version.id,question,note}),'新版本已创建，已有问卷引用保持原样',true);
+    },'保存新版本'),button('取消编辑',()=>{if(!busy)editor.hidden=true;}));
     if(editor.scrollIntoView)editor.scrollIntoView({block:'start'});
   }
   const history=el('section',{},el('h2',{},'版本历史'));
@@ -591,8 +613,7 @@ async function libraryQuestionView(id){
       el('p',{class:'help'},parent?`基于 v${parent.version}${restored?' · 恢复自 v'+restored.version:''}`:'初始版本'),
       versionPreview(version),el('p',{class:'preview'},version.note||'无版本说明'));
     if(owner)card.append(el('div',{class:'actions'},button('基于此版本编辑',()=>editVersion(version)),button('恢复此版本',async()=>{
-      await api('/api/questions/'+id+'/restore','POST',{versionId:version.id,note:'恢复历史版本 v'+version.version});
-      await render();show('已将历史内容恢复为新版本，全部旧版本保留',true);
+      await mutate(()=>api('/api/questions/'+id+'/restore','POST',{versionId:version.id,note:'恢复历史版本 v'+version.version}),'已将历史内容恢复为新版本，全部旧版本保留',true);
     })));
     history.append(card);
   }
@@ -600,8 +621,12 @@ async function libraryQuestionView(id){
   if(owner){
     const names=input((template.sharedUsernames||[]).join(', '),()=>{},'text',{'aria-label':'共享用户名'});
     root.append(el('section',{class:'card'},el('h2',{},'共享题目'),field('共享用户名',names,'用逗号分隔。保存会替换共享名单；留空保存可撤销全部共享。被共享者可查看和引用版本，不能修改你的题目。'),button('保存共享设置',async()=>{
-      await api('/api/questions/'+id+'/sharing','PUT',{usernames:names.value.split(/[,，\s]+/).filter(Boolean)});
-      show('共享设置已保存',true);
+      await mutate(async()=>{
+        const saved=await api('/api/questions/'+id+'/sharing','PUT',{usernames:names.value.split(/[,，\s]+/).filter(Boolean),sharingRevision:template.sharingRevision??0});
+        if(generation!==routeGeneration)return;
+        template.sharingRevision=saved.sharingRevision;
+        names.value=(saved.sharedUsernames||[]).join(', ');
+      },'共享设置已保存');
     })));
   }
   const usagePanel=el('section',{class:'card'},el('h2',{},'使用情况'));

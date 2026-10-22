@@ -15,6 +15,7 @@ type QuestionTemplate struct {
 	OwnerID         string           `json:"ownerId" bson:"ownerId"`
 	SharedWith      []string         `json:"sharedWith" bson:"sharedWith"`
 	SharedUsernames []string         `json:"sharedUsernames,omitempty" bson:"-"`
+	SharingRevision int              `json:"sharingRevision" bson:"sharingRevision"`
 	NextVersion     int              `json:"nextVersion" bson:"nextVersion"`
 	Ready           bool             `json:"-" bson:"ready"`
 	CreatedAt       time.Time        `json:"createdAt" bson:"createdAt"`

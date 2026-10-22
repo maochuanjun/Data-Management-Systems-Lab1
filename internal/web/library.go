@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"questionnaire/internal/domain"
+	"questionnaire/internal/store"
 )
 
 // The additive capability leaves existing phase-one repository adapters intact.
@@ -21,7 +23,7 @@ type LibraryRepository interface {
 	QuestionVersions(context.Context, string) ([]domain.QuestionVersion, error)
 	CreateQuestionTemplate(context.Context, *domain.QuestionTemplate, *domain.QuestionVersion) error
 	CreateQuestionVersion(context.Context, string, string, *domain.QuestionVersion) error
-	SetQuestionSharing(context.Context, string, string, []string) error
+	SetQuestionSharing(context.Context, string, string, []string, int) error
 	ListQuestionBanks(context.Context, string) ([]domain.QuestionBank, error)
 	QuestionBank(context.Context, string) (*domain.QuestionBank, error)
 	CreateQuestionBank(context.Context, *domain.QuestionBank) error
@@ -280,9 +282,14 @@ func (s *Server) shareQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Usernames []string `json:"usernames"`
+		Usernames       []string `json:"usernames"`
+		SharingRevision *int     `json:"sharingRevision"`
 	}
 	if !decode(w, r, &body) {
+		return
+	}
+	if body.SharingRevision == nil || *body.SharingRevision < 0 {
+		fail(w, 400, "共享设置版本号不能为空且必须为非负整数")
 		return
 	}
 	if len(body.Usernames) > 100 {
@@ -307,11 +314,16 @@ func (s *Server) shareQuestion(w http.ResponseWriter, r *http.Request) {
 			seen[other.ID] = true
 		}
 	}
-	if err := s.library.SetQuestionSharing(r.Context(), t.ID, u.ID, ids); err != nil {
+	if err := s.library.SetQuestionSharing(r.Context(), t.ID, u.ID, ids, *body.SharingRevision); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			fail(w, 409, "共享设置已被其他页面修改，请刷新后检查共享名单再保存")
+			return
+		}
 		s.dbError(w, err)
 		return
 	}
 	t.SharedWith = ids
+	t.SharingRevision = *body.SharingRevision + 1
 	if s.templateNames(w, r, t, u.ID) {
 		write(w, 200, t)
 	}

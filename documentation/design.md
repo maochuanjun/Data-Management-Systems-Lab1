@@ -12,7 +12,7 @@
 | `sessions` | `_id`, `userId`, `expiresAt` | 登录会话，令牌哈希作为文档 ID |
 | `surveys` | `_id`, `ownerId`, `title`, `status`, `questions`, `deadline`, `revision` | 问卷及题目配置 |
 | `responses` | `_id`, `surveyId`, `answers`, `path`, `submittedAt` | 每次提交的答卷 |
-| `question_templates` | `_id`, `ownerId`, `sharedWith`, `nextVersion`, `ready` | 题目归属、共享授权与版本分配 |
+| `question_templates` | `_id`, `ownerId`, `sharedWith`, `sharingRevision`, `nextVersion`, `ready` | 题目归属、共享授权与版本分配 |
 | `question_versions` | `_id`, `questionId`, `version`, `parentVersionId`, `restoredFromVersionId`, `question` | 不可变题目内容与版本来源 |
 | `question_banks` | `_id`, `ownerId`, `name`, `versionIds`, `revision` | 个人题库及显式固定的版本 |
 
@@ -145,6 +145,10 @@ question_templates（归属、共享）
 ### 共享与权限边界
 
 共享名单保存在题目级别，由作者按用户名管理。被共享用户可读取所有版本并引用到自己的问卷，不能修改作者的题目或共享名单。版本历史、使用情况和统计接口都先检查题目读取权限。
+
+共享名单使用独立的 `sharingRevision` 做条件更新，并在同一原子操作中递增，避免旧页面恢复另一页面刚撤销的权限。历史文档缺少该字段时按 0 匹配，首次更新使用 `$inc` 写入 1，无需批量迁移。内容版本的创建和恢复不改变共享版本号。
+
+题目详情页的版本保存、恢复和共享保存使用同一个忙碌状态；请求期间禁用详情页表单及操作按钮，失败后保留输入并恢复编辑。共享成功后使用服务端返回的名单和版本号，冲突不会自动重试。离开页面后，旧请求的响应不能刷新新页面或显示过期提示。
 
 撤销共享阻止后续读取和新增引用，但原问卷嵌入快照仍可填写、保存、发布和查询单卷统计；题目的跨问卷统计接口仍要求当前题目读取权限。保存草稿时，仅当局部 ID、来源及内容与数据库中的原快照一致，才允许保留已撤销授权的引用；本地跳转规则仍可编辑。题库也允许保留原固定项，保留 ID 不授予新引用权限。
 

@@ -112,7 +112,7 @@ func TestLibrarySharingRevocationAndSnapshotIntegrity(t *testing.T) {
 	template := libraryCreate(t, owner, domain.Question{Title: "Shared number", Type: "fill", FillType: "number", Required: true, Validation: domain.Validation{Min: integrationFloat(0), Max: integrationFloat(100)}})
 	path := "/api/questions/" + template.ID
 	v1 := *template.LatestVersion
-	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{"library_reader"}}, 200)
+	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{"library_reader"}, "sharingRevision": 0}, 200)
 	reader.must(t, "GET", path, nil, 200)
 	listed := integrationDecode[[]domain.QuestionTemplate](t, reader.must(t, "GET", "/api/questions", nil, 200))
 	if len(listed) != 1 || listed[0].ID != template.ID {
@@ -152,7 +152,7 @@ func TestLibrarySharingRevocationAndSnapshotIntegrity(t *testing.T) {
 		})
 	}
 	outsider.must(t, "POST", "/api/surveys", domain.Survey{Title: "Unauthorized reuse", Questions: []domain.Question{shared}}, 404)
-	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{}}, 200)
+	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{}, "sharingRevision": 1}, 200)
 	reader.must(t, "GET", path, nil, 404)
 	reader.must(t, "GET", "/api/question-versions/"+v1.ID, nil, 404)
 	// A saved occurrence remains usable after access is revoked; new copies do not.
@@ -241,7 +241,7 @@ func TestLibraryUsagePrivacyAndWeightedNumericStats(t *testing.T) {
 	template := libraryCreate(t, owner, domain.Question{Title: "Score", Type: "fill", FillType: "number", Required: true})
 	v1 := *template.LatestVersion
 	path := "/api/questions/" + template.ID
-	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{"library_reader"}}, 200)
+	owner.must(t, "PUT", path+"/sharing", map[string]any{"usernames": []string{"library_reader"}, "sharingRevision": 0}, 200)
 	one := librarySurvey(t, owner, "One response", libraryOccurrence(v1, "score"))
 	two := librarySurvey(t, owner, "Two occurrences", libraryOccurrence(v1, "first"), libraryOccurrence(v1, "second"))
 	foreign := librarySurvey(t, reader, "Private respondent survey", libraryOccurrence(v1, "hidden"))
