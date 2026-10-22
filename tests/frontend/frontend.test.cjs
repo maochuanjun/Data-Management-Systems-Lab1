@@ -1345,3 +1345,136 @@ test("reverting fill types ignores API default values but still protects removed
     }
   }
 });
+function bankFixture() {
+  return {id: "s", ownerId: "owner", name: "Reusable bank", description: "Saved description",
+    versionIds: [], revision: 1};
+}
+async function phaseTwoBrowser(route, mutate, read = () => undefined) {
+  const ui = await browser((request) => {
+    if (request.method !== "GET") return mutate(request);
+    const override = read(request);
+    if (override !== undefined) return override;
+    if (request.url === "/api/questions" || request.url === "/api/question-banks") return [];
+    if (request.url === "/api/question-banks/s") return bankFixture();
+    if (request.url === "/api/surveys/s") return draft();
+    throw new Error("Unexpected read: " + request.url);
+  });
+  vm.runInContext('user = {id: "owner", username: "owner"}', ui.context);
+  ui.context.location.pathname = route;
+  await vm.runInContext("render()", ui.context);
+  ui.root = ui.nodes["#app"].children[0];
+  return ui;
+}
+
+for (const operation of ["create-question", "create-bank", "save-bank", "delete-bank"]) {
+  for (const outcome of ["resolve", "reject"]) {
+    test(`phase-two obsolete ${operation} ${outcome} leaves the current page and notice intact`, async () => {
+      const pending = deferred();
+      const route = operation === "create-question" ? "/questions"
+        : operation === "create-bank" ? "/banks" : "/banks/s";
+      const ui = await phaseTwoBrowser(route, () => pending.promise);
+      const root = ui.root;
+      let saving;
+      if (operation === "create-question") {
+        await click(findButton(root, "＋ 新建题目"));
+        const form = libraryForm(root);
+        change(libraryField(form, "题目标题"), "My question");
+        saving = submitForm(form);
+      } else if (operation === "create-bank") {
+        const form = libraryForm(root);
+        change(libraryField(form, "题库名称"), "New bank");
+        saving = submitForm(form);
+      } else {
+        saving = click(findButton(root, operation === "save-bank" ? "保存题库" : "删除题库"));
+      }
+      assert.equal(ui.calls.filter((request) => request.method !== "GET").length, 1);
+      ui.context.location.pathname = "/login";
+      await vm.runInContext("render()", ui.context);
+      const newPage = ui.nodes["#app"].children[0];
+      vm.runInContext('show("New page notice", true)', ui.context);
+      if (outcome === "resolve") pending.resolve({...bankFixture(), id: "created", revision: 2});
+      else pending.reject(new Error("Old page failure"));
+      await saving;
+      await flush();
+      assert.equal(ui.context.location.pathname, "/login");
+      assert.equal(ui.nodes["#app"].children[0], newPage);
+      assert.equal(text(ui.nodes["#notice"]), "New page notice");
+    });
+  }
+}
+
+test("phase-two superseded statistics errors do not overwrite a newer version result", async () => {
+  const pending = deferred();
+  const ui = await libraryBrowser(() => ({}), (request) => {
+    if (request.url.includes("/stats?") && request.url.includes("versionId=v1")) return pending.promise;
+    if (request.url.includes("/stats?") && request.url.includes("versionId=v2")) {
+      return {surveyCount: 2, totalAnswers: 3, versions: []};
+    }
+    return undefined;
+  });
+  const selector = libraryField(ui.root, "统计版本");
+  change(selector, "v1", "change");
+  change(selector, "v2", "change");
+  await flush();
+  assert.match(text(ui.root), /2 份问卷 · 3 份题目回答/);
+  vm.runInContext('show("Latest result is ready", true)', ui.context);
+  pending.reject(new Error("Stale version failed"));
+  await flush();
+  assert.match(text(ui.root), /2 份问卷 · 3 份题目回答/);
+  assert.equal(text(ui.nodes["#notice"]), "Latest result is ready");
+});
+
+test("phase-two statistics errors after navigation do not notify the new page", async () => {
+  const pending = deferred();
+  const ui = await libraryBrowser(() => ({}), (request) =>
+    request.url.includes("/stats?") && request.url.includes("versionId=v1") ? pending.promise : undefined);
+  change(libraryField(ui.root, "统计版本"), "v1", "change");
+  ui.context.location.pathname = "/login";
+  await vm.runInContext("render()", ui.context);
+  const newPage = ui.nodes["#app"].children[0];
+  vm.runInContext('show("New page notice", true)', ui.context);
+  pending.reject(new Error("Previous statistics failed"));
+  await flush();
+  assert.equal(ui.nodes["#app"].children[0], newPage);
+  assert.equal(text(ui.nodes["#notice"]), "New page notice");
+});
+test("phase-two saving a survey question does not notify a page opened while it was pending", async () => {
+  const pending = deferred();
+  const ui = await phaseTwoBrowser("/edit/s", () => pending.promise);
+  const saving = click(findButton(ui.root, "另存为我的题目"));
+  assert.equal(ui.calls.at(-1).url, "/api/questions");
+  ui.context.location.pathname = "/login";
+  await vm.runInContext("render()", ui.context);
+  const newPage = ui.nodes["#app"].children[0];
+  vm.runInContext('show("New page notice", true)', ui.context);
+  pending.resolve({id: "created"});
+  await saving;
+  assert.equal(ui.nodes["#app"].children[0], newPage);
+  assert.equal(text(ui.nodes["#notice"]), "New page notice");
+});
+
+test("phase-two a delayed bank preview does not notify a page opened after selection", async () => {
+  const pending = deferred();
+  const versions = libraryVersions().map((version) => ({...version, questionId: "s"}));
+  const ui = await phaseTwoBrowser("/banks/s", () => {
+    throw new Error("Choosing a bank item must not write before saving");
+  }, (request) => {
+    if (request.url === "/api/questions") return [libraryTemplate()];
+    if (request.url === "/api/questions/s/versions") return versions;
+    if (request.url === "/api/question-versions/v2") return pending.promise;
+    return undefined;
+  });
+  await click(findButton(ui.root, "添加题目版本"));
+  change(libraryField(ui.root, "选择题目"), "s", "change");
+  await flush();
+  const adding = click(findButton(ui.root, "添加选定版本"));
+  assert.equal(ui.calls.at(-1).url, "/api/question-versions/v2");
+  ui.context.location.pathname = "/login";
+  await vm.runInContext("render()", ui.context);
+  const newPage = ui.nodes["#app"].children[0];
+  vm.runInContext('show("New page notice", true)', ui.context);
+  pending.resolve(versions[1]);
+  await adding;
+  assert.equal(ui.nodes["#app"].children[0], newPage);
+  assert.equal(text(ui.nodes["#notice"]), "New page notice");
+});

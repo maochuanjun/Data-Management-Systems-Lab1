@@ -44,8 +44,8 @@ async function api(path, method = 'GET', body) {
 }
 function button(label, handler, className = '') {
   return el('button',{type:'button',class:className,onclick:async event => {
-    const target = event.currentTarget; target.disabled = true;
-    try { await handler(); } catch (error) { show(error.message); } finally { target.disabled = false; }
+    const target = event.currentTarget, generation = routeGeneration; target.disabled = true;
+    try { await handler(); } catch (error) { if(generation===routeGeneration)show(error.message); } finally { target.disabled = false; }
   }},label);
 }
 function field(label, control, help) {
@@ -148,6 +148,7 @@ async function dashboard() {
 }
 function identifier(prefix) {return prefix+'_'+Math.random().toString(36).slice(2,10);}
 async function editorView(id) {
+  const generation=routeGeneration;
   let survey=await api('/api/surveys/'+id);
   let busy=false;
   const root=el('fieldset',{style:'border:0;padding:0;margin:0;min-width:0'});
@@ -328,7 +329,7 @@ async function editorView(id) {
     }
     if(!locked)card.append(button('另存为我的题目',async()=>{
       await api('/api/questions','POST',{question:reusableQuestion(question),note:'从问卷保存'});
-      show('已保存到我的题目，可在题库中收录；问卷跳转规则不复制',true);
+      if(generation===routeGeneration)show('已保存到我的题目，可在题库中收录；问卷跳转规则不复制',true);
     }));
     const operators={single:[['eq','等于选项']],multiple:[['contains','包含选项'],['contains_all','包含全部选项']],
       text:[],number:[['eq','等于'],['gt','大于'],['gte','大于等于'],['lt','小于'],['lte','小于等于']]}[answerType(question)];
@@ -571,12 +572,14 @@ function versionPreview(version){
     }).filter(Boolean).join(' · ')));
 }
 async function libraryView(){
+  const generation=routeGeneration;
   const templates=await api('/api/questions');
   const create=el('section',{hidden:true});
   const root=el('div',{},hero('我的题目','管理可复用题目，以及其他用户共享给你的题目。',button('＋ 新建题目',()=>{
     create.hidden=!create.hidden;
     if(!create.children.length)create.append(questionContentForm(newLibraryQuestion(),async(question,note)=>{
-      const template=await api('/api/questions','POST',{question,note});go('/questions/'+template.id);
+      const template=await api('/api/questions','POST',{question,note});
+      if(generation===routeGeneration)go('/questions/'+template.id);
     }));
   },'primary')),create);
   if(!templates.length)root.append(el('p',{class:'empty'},'暂无可用题目。新建题目，或在问卷中把现有题目另存到这里。'));
@@ -668,8 +671,10 @@ async function libraryQuestionView(id){
   const results=el('div');let queryGeneration=0;
   async function loadStatistics(versionId='',offset=0){
     const current=++queryGeneration;
-    const stats=await api('/api/questions/'+id+'/stats?limit=20&offset='+offset+(versionId?'&versionId='+encodeURIComponent(versionId):''));
-    if(current!==queryGeneration)return;
+    let stats;
+    try{stats=await api('/api/questions/'+id+'/stats?limit=20&offset='+offset+(versionId?'&versionId='+encodeURIComponent(versionId):''));}
+    catch(error){if(current!==queryGeneration||generation!==routeGeneration)return;throw error;}
+    if(current!==queryGeneration||generation!==routeGeneration)return;
     results.replaceChildren(el('p',{},`${stats.surveyCount} 份问卷 · ${stats.totalAnswers} 份题目回答`));
     for(const group of stats.versions||[]){
       const card=el('article',{class:'card'},el('h3',{class:'preview'},`v${group.version} · ${group.title}`),el('p',{class:'help'},`${group.surveyCount} 份问卷 · ${group.answered} 份回答`));
@@ -735,19 +740,21 @@ async function libraryPicker(onChoose,includeBanks=false){
   return root;
 }
 async function banksView(){
+  const generation=routeGeneration;
   const banks=await api('/api/question-banks');
   const root=el('div',{},hero('题库','按用途收录题目的固定版本；调整题库不会修改已有问卷。'));
   let name='',description='';
   const submit=el('button',{type:'submit',class:'primary'},'新建题库');
   root.append(el('form',{class:'card',onsubmit:async event=>{
     event.preventDefault();submit.disabled=true;
-    try{const bank=await api('/api/question-banks','POST',{name,description,versionIds:[]});go('/banks/'+bank.id);}
-    catch(error){show(error.message);}finally{submit.disabled=false;}
+    try{const bank=await api('/api/question-banks','POST',{name,description,versionIds:[]});if(generation===routeGeneration)go('/banks/'+bank.id);}
+    catch(error){if(generation===routeGeneration)show(error.message);}finally{submit.disabled=false;}
   }},field('题库名称',input(name,value=>name=value,'text',{required:true,maxLength:100})),field('题库说明',input(description,value=>description=value)),submit));
   root.append(banks.length?el('div',{class:'grid'},banks.map(bank=>el('article',{class:'card'},el('h2',{class:'preview'},bank.name),el('p',{class:'preview'},bank.description),el('p',{class:'help'},`${bank.versionIds?.length||0} 个固定版本`),link('管理题库','/banks/'+bank.id)))):el('p',{class:'empty'},'尚未创建题库。'));
   return root;
 }
 async function bankView(id){
+  const generation=routeGeneration;
   let bank=await api('/api/question-banks/'+id),busy=false,renderSequence=0;
   const root=el('fieldset',{class:'library-root'}),body=el('div'),entries=el('div'),picker=el('section',{class:'card',hidden:true});
   root.append(hero('管理题库','收录、移除或替换固定版本后，请保存题库。已有问卷引用保持原样。',link('← 题库列表','/banks')),body,entries,picker);
@@ -779,17 +786,22 @@ async function bankView(id){
     el('div',{class:'actions'},button('添加题目版本',async()=>{
       picker.hidden=false;picker.replaceChildren(await libraryPicker(async version=>{
         if(bank.versionIds.includes(version.id))throw new Error('此版本已在题库中');
-        bank.versionIds.push(version.id);picker.hidden=true;await paintEntries();show('已添加，请保存题库',true);
+        bank.versionIds.push(version.id);picker.hidden=true;await paintEntries();
+        if(generation===routeGeneration)show('已添加，请保存题库',true);
       }),button('收起选择器',()=>{picker.hidden=true;}));
     }),button('保存题库',async()=>{
-      if(busy)return;busy=true;root.disabled=true;
-      try{bank=await api('/api/question-banks/'+id,'PUT',{name:bank.name,description:bank.description,versionIds:bank.versionIds,revision:bank.revision});show('题库已保存',true);}
+      if(busy||generation!==routeGeneration)return;busy=true;root.disabled=true;
+      try{
+        const saved=await api('/api/question-banks/'+id,'PUT',{name:bank.name,description:bank.description,versionIds:bank.versionIds,revision:bank.revision});
+        if(generation!==routeGeneration)return;
+        bank=saved;show('题库已保存',true);
+      }
       finally{busy=false;root.disabled=false;}
     },'primary'),button('删除题库',async()=>{
-      if(busy)return;
+      if(busy||generation!==routeGeneration)return;
       if(typeof window.confirm==='function'&&!window.confirm('确定删除此题库？题目版本和已创建的问卷将保留。'))return;
       busy=true;root.disabled=true;
-      try{await api('/api/question-banks/'+id+'?revision='+bank.revision,'DELETE');go('/banks');}
+      try{await api('/api/question-banks/'+id+'?revision='+bank.revision,'DELETE');if(generation===routeGeneration)go('/banks');}
       finally{busy=false;root.disabled=false;}
     },'danger'))));
   await paintEntries();return root;
