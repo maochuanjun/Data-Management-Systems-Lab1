@@ -160,11 +160,12 @@ function authView() {
   return el('section',{class:'auth'},title,el('p',{class:'muted'},'登录后可以创建、填写问卷，以及查看自己创建问卷的统计结果。'),form);
 }
 async function dashboard() {
+  const generation=routeGeneration;
   const surveys=await api('/api/surveys');
   let archivedView=false;
   const root=el('div',{},hero('我的问卷','创建、发布问卷并查看填写结果。',button('＋ 新建问卷',async()=>{
     const survey=await api('/api/surveys','POST',{title:'未命名问卷',description:'',allowAnonymous:true,allowRepeat:false,deadline:null,questions:[]});
-    go('/edit/'+survey.id);
+    if(generation===routeGeneration)go('/edit/'+survey.id);
   },'primary')));
   const toggle=button('查看已归档问卷',()=>{
     archivedView=!archivedView;
