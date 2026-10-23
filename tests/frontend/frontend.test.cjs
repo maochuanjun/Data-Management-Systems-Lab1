@@ -888,6 +888,98 @@ test("dashboard hides archived questionnaires until requested", async () => {
   assert.doesNotMatch(text(root), /Visible draft/);
 });
 
+for (const dirtyBank of [false, true]) {
+  for (const outcome of ["resolve", "reject"]) {
+    test(`dashboard obsolete create-survey ${outcome} preserves the ${dirtyBank ? "edited" : "clean"} bank page and notice`, async () => {
+      const pending = deferred();
+      const ui = await phaseTwoBrowser("/", () => pending.promise,
+        (request) => request.url === "/api/surveys" ? [] : undefined);
+      const creating = click(findButton(ui.root, "＋ 新建问卷"));
+      assert.deepEqual(libraryWrites(ui).map(({url, method}) => ({url, method})), [
+        {url: "/api/surveys", method: "POST"},
+      ]);
+      vm.runInContext("go('/banks')", ui.context); await flush();
+      const bankPage = ui.nodes["#app"].children[0];
+      const name = libraryField(bankPage, "题库名称");
+      if (dirtyBank) change(name, "Keep this unsaved bank");
+      // Accepting an unexpected confirmation must not mask a stale redirect.
+      const messages = recordConfirmations(ui, true);
+      vm.runInContext('show("Current bank notice", true)', ui.context);
+      const callCount = ui.calls.length;
+      if (outcome === "resolve") pending.resolve({...draft(), id: "created-after-leaving"});
+      else pending.reject(new Error("Old survey creation failed"));
+      await creating; await flush();
+      assert.equal(ui.context.location.pathname, "/banks");
+      assert.equal(ui.nodes["#app"].children[0], bankPage);
+      assert.equal(name.value, dirtyBank ? "Keep this unsaved bank" : "");
+      assert.equal(text(ui.nodes["#notice"]), "Current bank notice");
+      assert.equal(ui.nodes["#notice"].hidden, false);
+      assert.equal(ui.nodes["#notice"].className, "success");
+      assert.equal(messages.length, 0, "an obsolete callback must not ask to discard the new page");
+      assert.equal(ui.calls.length, callCount, "no editor read or compensating delete is sent");
+      if (dirtyBank) {
+        const leaveMessages = recordConfirmations(ui);
+        assert.equal(vm.runInContext("go('/')", ui.context), false);
+        await flush();
+        assert.equal(leaveMessages.length, 1);
+        assert.equal(ui.context.location.pathname, "/banks");
+        assert.equal(ui.nodes["#app"].children[0], bankPage);
+        assert.equal(name.value, "Keep this unsaved bank");
+      }
+    });
+  }
+}
+
+test("dashboard create-survey success opens the editor and keeps unsaved edits protected", async () => {
+  const pending = deferred(), created = {...draft(), id: "created"};
+  const ui = await phaseTwoBrowser("/", () => pending.promise, (request) => {
+    if (request.url === "/api/surveys") return [];
+    if (request.url === "/api/surveys/created") return created;
+  });
+  const create = findButton(ui.root, "＋ 新建问卷");
+  const messages = recordConfirmations(ui);
+  const creating = click(create);
+  assert.equal(create.disabled, true);
+  await click(create);
+  assert.equal(libraryWrites(ui).length, 1);
+  pending.resolve(created);
+  await creating; await flush();
+  assert.equal(ui.context.location.pathname, "/edit/created");
+  const editor = ui.nodes["#app"].children[0];
+  assert.match(text(editor), /设计问卷/);
+  assert.equal(titleField(editor).value, created.title);
+  assert.equal(messages.length, 0);
+  assert.equal(ui.calls.filter((request) => request.url === "/api/surveys/created").length, 1);
+  change(titleField(editor), "Keep this survey draft");
+  assert.equal(vm.runInContext("go('/banks')", ui.context), false);
+  await flush();
+  assert.equal(messages.length, 1);
+  assert.equal(ui.context.location.pathname, "/edit/created");
+  assert.equal(ui.nodes["#app"].children[0], editor);
+  assert.equal(titleField(editor).value, "Keep this survey draft");
+});
+
+test("dashboard obsolete create-survey success stays ignored after returning to the dashboard", async () => {
+  const pending = deferred();
+  const ui = await phaseTwoBrowser("/", () => pending.promise,
+    (request) => request.url === "/api/surveys" ? [] : undefined);
+  const creating = click(findButton(ui.root, "＋ 新建问卷"));
+  vm.runInContext("go('/banks')", ui.context); await flush();
+  vm.runInContext("go('/')", ui.context); await flush();
+  const newDashboard = ui.nodes["#app"].children[0];
+  assert.notEqual(newDashboard, ui.root);
+  vm.runInContext('show("Current dashboard notice", true)', ui.context);
+  const callCount = ui.calls.length;
+  pending.resolve({...draft(), id: "created-after-returning"});
+  await creating; await flush();
+  assert.equal(ui.context.location.pathname, "/");
+  assert.equal(ui.nodes["#app"].children[0], newDashboard);
+  assert.equal(text(ui.nodes["#notice"]), "Current dashboard notice");
+  assert.equal(ui.nodes["#notice"].hidden, false);
+  assert.equal(ui.nodes["#notice"].className, "success");
+  assert.equal(ui.calls.length, callCount);
+});
+
 test("editor offers three question types and saves text/number as fill subtypes", async () => {
   const ui = await browser((req) =>
     req.method === "PUT" ? {...req.body, revision: 2} : {...draft(), questions: []},
