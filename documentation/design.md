@@ -182,13 +182,13 @@ question_templates（归属、共享）
 
 例如，本人问卷 A 提交一个数值 100，本人问卷 B 在每份答卷中两次引用同一版本，三份答卷依次为 10/11、20/21、30/31。结果有 7 个题目实例、2 份贡献回答的问卷，平均值为 `223/7`。另一用户问卷中的 999 只属于该用户的统计。这个例子同时检验跨问卷汇总、重复出现和用户权限，具体断言见 [测试说明](testing.md)。
 
-全部版本视图仅返回摘要。选择具体版本后，原始答案按稳定排序取 `limit+1` 条判断下一页，对外每页最多 50 条，避免一次返回全部长文本。该查询使用动态字段表达式形式的 `$getField`；运行环境以 MongoDB 8.0 为基准，相关表达式从 7.2 起可用。操作符定义见 MongoDB 官方文档：[$getField](https://www.mongodb.com/docs/manual/reference/operator/aggregation/getfield/) 与 [$bucketAuto](https://www.mongodb.com/docs/manual/reference/operator/aggregation/bucketauto/)。
+全部版本视图仅返回摘要。选择具体版本后，原始答案按稳定排序取 `limit+1` 条判断下一页，对外每页最多 50 条，避免一次返回全部长文本。该查询使用动态字段表达式形式的 `$getField`；运行环境以 MongoDB 8.0 为基准，相关表达式从 7.2 起可用。操作符定义见 MongoDB 官方文档：[\$getField](https://www.mongodb.com/docs/manual/reference/operator/aggregation/getfield/) 与 [\$bucketAuto](https://www.mongodb.com/docs/manual/reference/operator/aggregation/bucketauto/)。
 
 升级以增量集合和可选来源字段为主。已有 `surveys`、`responses` 的内容和局部题目 ID 继续有效；没有来源的旧题目不按标题猜测同一性，也不重写历史答卷。将旧问卷题目另存为可复用题目会创建新实体，历史独立题目不会自动归入新题目的统计。原来的历史去重回填、题型兼容、归档/重开、16 MiB 答卷请求容量继续执行。
 
 当前关闭操作与已经进入处理的并发提交并非单一事务边界；统计摘要和原始答案多次查询也不保证同一时点快照。题目列表和版本历史尚未分页，大量版本会增加读取及逐版本统计成本。若数据规模扩大，可沿现有仓储接口增加列表游标和统计缓存；仍应保留不可变版本、显式固定和用户数据权限这些业务约束。
 
-## 9. 用户反馈后的填写与编辑一致性
+## 9. 个人反馈后的填写与编辑一致性
 
 ### 页面草稿与提交答案分别保存
 
